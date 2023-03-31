@@ -53,6 +53,9 @@ pub(crate) async fn start_rest_server(
     rest_listen_addr: SocketAddr,
     quickwit_services: &QuickwitServices,
 ) -> anyhow::Result<()> {
+    let node_id = quickwit_services.config.node_id.clone();
+    let metastore = quickwit_services.metastore.clone();
+
     info!(rest_listen_addr = %rest_listen_addr, "Starting REST server.");
     let request_counter = warp::log::custom(|_| {
         crate::SERVE_METRICS.http_requests_total.inc();
@@ -94,7 +97,11 @@ pub(crate) async fn start_rest_server(
         .or(search_stream_handler(
             quickwit_services.search_service.clone(),
         ))
-        .or(ingest_api_handlers(ingest_service.clone()))
+        .or(ingest_api_handlers(
+            node_id,
+            metastore,
+            ingest_service.clone(),
+        ))
         .or(index_management_handlers(
             quickwit_services.index_service.clone(),
             quickwit_services.config.clone(),

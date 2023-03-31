@@ -641,7 +641,6 @@ dependencies = [
 [[package]]
 name = "chitchat"
 version = "0.5.0"
-source = "git+https://github.com/quickwit-oss/chitchat?rev=4973853#497385319d05eab8d4e77d1dcbb2e67fe1541206"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4269,13 +4268,17 @@ dependencies = [
  "quickwit-common",
  "quickwit-config",
  "quickwit-proto",
+ "quickwit-types",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
+ "time 0.3.20",
  "tokio",
  "tokio-stream",
+ "tonic",
+ "tower",
  "tracing",
  "utoipa",
 ]
@@ -4342,6 +4345,7 @@ dependencies = [
  "pin-project",
  "pnet",
  "prometheus",
+ "prost-types",
  "quickwit-macros",
  "rand 0.8.5",
  "regex",
@@ -4349,7 +4353,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "time 0.3.20",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "tower",
  "tracing",
  "utoipa",
@@ -4373,6 +4380,7 @@ dependencies = [
  "once_cell",
  "quickwit-common",
  "quickwit-doc-mapper",
+ "quickwit-types",
  "regex",
  "serde",
  "serde_json",
@@ -4408,6 +4416,7 @@ dependencies = [
  "quickwit-metastore",
  "quickwit-proto",
  "quickwit-storage",
+ "quickwit-types",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -4559,6 +4568,7 @@ dependencies = [
  "quickwit-metastore",
  "quickwit-proto",
  "quickwit-storage",
+ "quickwit-types",
  "rand 0.8.5",
  "rdkafka",
  "reqwest",
@@ -4599,7 +4609,9 @@ dependencies = [
  "quickwit-codegen",
  "quickwit-common",
  "quickwit-config",
+ "quickwit-metastore",
  "quickwit-proto",
+ "quickwit-types",
  "rand 0.8.5",
  "rand_distr",
  "serde",
@@ -4663,6 +4675,7 @@ dependencies = [
  "quickwit-proto",
  "quickwit-search",
  "quickwit-storage",
+ "quickwit-types",
  "serde",
  "serde_json",
  "tantivy",
@@ -4707,6 +4720,7 @@ dependencies = [
  "md5",
  "mockall",
  "once_cell",
+ "prost-types",
  "quickwit-cluster",
  "quickwit-common",
  "quickwit-config",
@@ -4714,6 +4728,7 @@ dependencies = [
  "quickwit-grpc-clients",
  "quickwit-proto",
  "quickwit-storage",
+ "quickwit-types",
  "rand 0.8.5",
  "regex",
  "serde",
@@ -4724,6 +4739,7 @@ dependencies = [
  "time 0.3.20",
  "tokio",
  "tokio-stream",
+ "tonic",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -4774,6 +4790,7 @@ dependencies = [
  "prost",
  "prost-build",
  "prost-types",
+ "quickwit-common",
  "serde",
  "serde_json",
  "tonic",
@@ -4963,6 +4980,14 @@ dependencies = [
  "tracing",
  "username",
  "uuid",
+]
+
+[[package]]
+name = "quickwit-types"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

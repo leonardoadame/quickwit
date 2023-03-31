@@ -34,7 +34,7 @@ use crate::{check_cluster_configuration, node_readiness_reporting_task};
 
 #[tokio::test]
 async fn test_check_cluster_configuration() {
-    let services = HashSet::from_iter([QuickwitService::Metastore]);
+    let services = BTreeSet::from_iter([QuickwitService::Metastore]);
     let peer_seeds = ["192.168.0.12:7280".to_string()];
     let mut metastore = MockMetastore::new();
 
@@ -138,11 +138,11 @@ async fn test_standalone_server() {
 async fn test_multi_nodes_cluster() {
     quickwit_common::setup_logging_for_tests();
     let nodes_services = vec![
-        HashSet::from_iter([QuickwitService::Searcher]),
-        HashSet::from_iter([QuickwitService::Metastore]),
-        HashSet::from_iter([QuickwitService::Indexer]),
-        HashSet::from_iter([QuickwitService::ControlPlane]),
-        HashSet::from_iter([QuickwitService::Janitor]),
+        BTreeSet::from_iter([QuickwitService::Searcher]),
+        BTreeSet::from_iter([QuickwitService::Metastore]),
+        BTreeSet::from_iter([QuickwitService::Indexer]),
+        BTreeSet::from_iter([QuickwitService::ControlPlane]),
+        BTreeSet::from_iter([QuickwitService::Janitor]),
     ];
     let sandbox = ClusterSandbox::start_cluster_nodes(&nodes_services)
         .await
