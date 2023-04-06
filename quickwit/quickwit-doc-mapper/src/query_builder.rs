@@ -18,57 +18,67 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
 
 use anyhow::{bail, Context};
 use quickwit_proto::SearchRequest;
-use tantivy::query::{Query, QueryParser, QueryParserError as TantivyQueryParserError};
+use quickwit_query::quickwit_query_ast::{QueryAst, QueryAstVisitor, RangeQuery};
+use tantivy::query::Query;
 use tantivy::query_grammar::{UserInputAst, UserInputLeaf, UserInputLiteral};
 use tantivy::schema::{Field, FieldEntry, FieldType, Schema};
 
-use crate::{QueryParserError, WarmupInfo, DYNAMIC_FIELD_NAME, QUICKWIT_TOKENIZER_MANAGER};
+use crate::{QueryParserError, WarmupInfo};
+
+#[derive(Default)]
+struct RangeQueryFields {
+    range_query_field_names: HashSet<String>,
+}
+
+impl<'a> QueryAstVisitor<'a> for RangeQueryFields {
+    type Err = Infallible;
+
+    fn visit_range(&mut self, range_query: &'a RangeQuery) -> Result<(), Infallible> {
+        self.range_query_field_names
+            .insert(range_query.field.to_string());
+        Ok(())
+    }
+}
 
 /// Build a `Query` with field resolution & forbidding range clauses.
 pub(crate) fn build_query(
-    schema: Schema,
     request: &SearchRequest,
-    default_field_names: &[String],
+    schema: Schema,
+    with_validation: bool,
 ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
-    let user_input_ast = tantivy::query_grammar::parse_query(&request.query)
-        .map_err(|_| TantivyQueryParserError::SyntaxError(request.query.to_string()))?;
+    let query_ast: QueryAst = serde_json::from_str(&request.query_ast)?;
+    let mut range_query_fields = RangeQueryFields::default();
+    range_query_fields.visit(&query_ast).unwrap();
+    let fast_field_names: HashSet<String> = range_query_fields.range_query_field_names;
 
-    let fast_field_names: HashSet<String> = extract_field_with_ranges(&schema, &user_input_ast)?;
+    // TODO identify if a default field is needed and missing.
 
-    if needs_default_search_field(&user_input_ast)
-        && request.search_fields.is_empty()
-        && (default_field_names.is_empty() || default_field_names == [DYNAMIC_FIELD_NAME])
-    {
-        return Err(
-            anyhow::anyhow!("No default field declared and no field specified in query.").into(),
-        );
-    }
+    // TODO
+    // validate requested snippet fields:
+    // - snippet fields must be in the query
+    // - snippet fields must be text fields.
 
-    validate_requested_snippet_fields(&schema, request, &user_input_ast, default_field_names)?;
+    // resolve the query using the default fields given in the query if any, or using hte ones in
+    // the docmapper. -----
+    // validate sort by fields.
+    // parse phrase query if needed.
+    // extract term set
 
-    let search_fields = if request.search_fields.is_empty() {
-        resolve_fields(&schema, default_field_names)?
-    } else {
-        resolve_fields(&schema, &request.search_fields)?
-    };
+    // validate_requested_snippet_fields(&schema, request, &user_input_ast, default_field_names)?;
 
     if let Some(sort_by_field) = &request.sort_by_field {
-        validate_sort_by_field(sort_by_field, &schema, Some(&search_fields))?;
+        validate_sort_by_field(sort_by_field, &schema)?;
     }
 
-    let mut query_parser =
-        QueryParser::new(schema, search_fields, QUICKWIT_TOKENIZER_MANAGER.clone());
-    query_parser.set_conjunction_by_default();
-    let query = query_parser.parse_query(&request.query)?;
+    let query = query_ast.build_tantivy_query(&schema, with_validation)?;
 
-    let mut term_set_query_fields = HashSet::new();
-    extract_term_set_query_fields(&user_input_ast, &mut term_set_query_fields);
+    let term_set_query_fields = extract_term_set_query_fields(&query_ast);
 
     let mut terms_grouped_by_field: HashMap<Field, HashMap<_, bool>> = Default::default();
-
     query.query_terms(&mut |term, need_position| {
         let field = term.field();
         *terms_grouped_by_field
@@ -89,176 +99,35 @@ pub(crate) fn build_query(
     Ok((query, warmup_info))
 }
 
-fn resolve_fields(schema: &Schema, field_names: &[String]) -> anyhow::Result<Vec<Field>> {
-    let mut fields = Vec::new();
-    for field_name in field_names {
-        let field = schema.get_field(field_name)?;
-        fields.push(field);
-    }
-    Ok(fields)
+#[derive(Default)]
+struct ExtractTermSetFields {
+    term_dict_fields_to_warm_up: HashSet<String>,
 }
 
-// Extract leaves from query ast.
-fn collect_leaves(user_input_ast: &UserInputAst) -> Vec<&UserInputLeaf> {
-    match user_input_ast {
-        UserInputAst::Clause(sub_queries) => {
-            let mut leaves = Vec::new();
-            for (_, sub_ast) in sub_queries {
-                leaves.extend(collect_leaves(sub_ast));
-            }
-            leaves
-        }
-        UserInputAst::Boost(ast, _) => collect_leaves(ast),
-        UserInputAst::Leaf(leaf) => vec![leaf],
-    }
-}
+impl<'a> QueryAstVisitor<'a> for ExtractTermSetFields {
+    type Err = anyhow::Error;
 
-fn extract_field_name(leaf: &UserInputLeaf) -> Option<&str> {
-    match leaf {
-        UserInputLeaf::Literal(UserInputLiteral { field_name, .. }) => field_name.as_deref(),
-        UserInputLeaf::Range { field, .. } => field.as_deref(),
-        UserInputLeaf::Set { field, .. } => field.as_deref(),
-        UserInputLeaf::All => None,
-    }
-}
-
-fn is_valid_field_for_range(field_entry: &FieldEntry) -> anyhow::Result<()> {
-    match field_entry.field_type() {
-        FieldType::Bool(_)
-        | FieldType::Date(_)
-        | FieldType::IpAddr(_)
-        | FieldType::F64(_)
-        | FieldType::I64(_)
-        | FieldType::U64(_) => {
-            if !field_entry.is_fast() {
-                bail!(
-                    "Range queries require having a fast field (field `{}` is not declared as a \
-                     fast field.)",
-                    field_entry.name()
-                );
+    fn visit(&mut self, query_ast: &'a QueryAst) -> Result<(), Self::Err> {
+        if let QueryAst::TermSet(term_set) = query_ast {
+            for field in term_set.terms_per_field.keys() {
+                self.term_dict_fields_to_warm_up.insert(field.to_string());
             }
         }
-        other_type => {
-            anyhow::bail!(
-                "Field `{}` is of type `{:?}`. Range queries are only supported on boolean, \
-                 datetime, IP, and numeric fields at the moment.",
-                field_entry.name(),
-                other_type.value_type()
-            );
-        }
+        Ok(())
     }
-    Ok(())
 }
 
-/// Extracts field names with ranges.
-fn extract_field_with_ranges(
-    schema: &Schema,
-    user_input_ast: &UserInputAst,
-) -> anyhow::Result<HashSet<String>> {
-    let mut field_with_ranges: HashSet<String> = Default::default();
-    for leaf in collect_leaves(user_input_ast) {
-        if let UserInputLeaf::Range { field, .. } = leaf {
-            // TODO check the field supports ranges.
-            if let Some(field_name) = field {
-                let field: Field = schema
-                    .get_field(field_name)
-                    .with_context(|| format!("Unknown field `{field_name}`"))?;
-                let field_entry = schema.get_field_entry(field);
-                is_valid_field_for_range(field_entry)?;
-                field_with_ranges.insert(field_name.clone());
-            } else {
-                anyhow::bail!("Range query without targeting a specific field is forbidden.");
-            }
-        }
-    }
-    Ok(field_with_ranges)
+fn extract_term_set_query_fields(query_ast: &QueryAst) -> HashSet<String> {
+    let mut visitor = ExtractTermSetFields::default();
+    visitor
+        .visit(query_ast)
+        .expect("Extracting term set queries's field should never return an error.");
+    visitor.term_dict_fields_to_warm_up
 }
 
-fn extract_term_set_query_fields(user_input_ast: &UserInputAst, set: &mut HashSet<String>) {
-    set.extend(
-        collect_leaves(user_input_ast)
-            .into_iter()
-            .filter_map(|leaf| {
-                if let UserInputLeaf::Set { field, .. } = leaf {
-                    field.clone()
-                } else {
-                    None
-                }
-            }),
-    )
-}
-
-/// Tells if the query has a Term or Range node which does not
-/// specify a search field.
-fn needs_default_search_field(user_input_ast: &UserInputAst) -> bool {
-    // `All` query apply to all fields, therefore doesn't need default fields.
-    if matches!(user_input_ast, UserInputAst::Leaf(leaf) if **leaf == UserInputLeaf::All) {
-        return false;
-    }
-
-    collect_leaves(user_input_ast)
-        .into_iter()
-        .any(|leaf| extract_field_name(leaf).is_none())
-}
-
-/// Collects all the fields names on the query ast nodes.
-fn field_names(user_input_ast: &UserInputAst) -> HashSet<&str> {
-    collect_leaves(user_input_ast)
-        .into_iter()
-        .filter_map(extract_field_name)
-        .collect()
-}
-
-fn validate_requested_snippet_fields(
-    schema: &Schema,
-    request: &SearchRequest,
-    user_input_ast: &UserInputAst,
-    default_field_names: &[String],
-) -> anyhow::Result<()> {
-    let query_fields = field_names(user_input_ast);
-    for field_name in &request.snippet_fields {
-        if !default_field_names.contains(field_name)
-            && !request.search_fields.contains(field_name)
-            && !query_fields.contains(field_name.as_str())
-        {
-            return Err(anyhow::anyhow!(
-                "The snippet field `{}` should be a default search field or appear in the query.",
-                field_name
-            ));
-        }
-
-        let field_entry = schema
-            .get_field(field_name)
-            .map(|field| schema.get_field_entry(field))?;
-        match field_entry.field_type() {
-            FieldType::Str(text_options) => {
-                if !text_options.is_stored() {
-                    return Err(anyhow::anyhow!(
-                        "The snippet field `{}` must be stored.",
-                        field_name
-                    ));
-                }
-                continue;
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "The snippet field `{}` must be of type `Str`, got `{}`.",
-                    field_name,
-                    other.value_type().name()
-                ))
-            }
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_sort_by_field(
-    field_name: &str,
-    schema: &Schema,
-    search_fields_opt: Option<&Vec<Field>>,
-) -> anyhow::Result<()> {
+pub(crate) fn validate_sort_by_field(field_name: &str, schema: &Schema) -> anyhow::Result<()> {
     if field_name == "_score" {
-        return validate_sort_by_score(schema, search_fields_opt);
+        return Ok(());
     }
     let sort_by_field = schema
         .get_field(field_name)
@@ -301,11 +170,10 @@ fn validate_sort_by_score(
 
 #[cfg(test)]
 mod test {
-    use quickwit_proto::SearchRequest;
-    use tantivy::query::QueryParserError;
+    use quickwit_proto::{query_string, SearchRequest};
     use tantivy::schema::{Schema, FAST, INDEXED, STORED, TEXT};
 
-    use super::{build_query, validate_requested_snippet_fields};
+    use super::build_query;
     use crate::{DYNAMIC_FIELD_NAME, SOURCE_FIELD_NAME};
 
     enum TestExpectation {
@@ -333,16 +201,11 @@ mod test {
     }
 
     #[track_caller]
-    fn check_build_query(
-        query_str: &str,
-        search_fields: Vec<String>,
-        default_search_fields: Option<Vec<String>>,
-        expected: TestExpectation,
-    ) {
+    fn check_build_query(user_query: &str, search_fields: Vec<String>, expected: TestExpectation) {
         let request = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
-            query: query_str.to_string(),
+            query_ast: quickwit_proto::query_string(user_query).unwrap(),
             search_fields,
             snippet_fields: Vec::new(),
             start_timestamp: None,
@@ -353,20 +216,18 @@ mod test {
             sort_by_field: None,
         };
 
-        let default_field_names =
-            default_search_fields.unwrap_or_else(|| vec!["title".to_string(), "desc".to_string()]);
-
-        let query_result = build_query(make_schema(), &request, &default_field_names);
+        let query_result = build_query(&request, make_schema(), true);
         match expected {
             TestExpectation::Err(sub_str) => {
                 assert!(
                     query_result.is_err(),
-                    "Expected error {sub_str}, but got a success on query parsing {query_str}"
+                    "Expected error {sub_str}, but got a success on query parsing {user_query}"
                 );
                 let query_err = query_result.err().unwrap();
+                let query_err_msg = query_err.to_string();
                 assert!(
-                    format!("{query_err:?}").contains(sub_str),
-                    "Query error received is {query_err:?}. It should contain {sub_str}"
+                    query_err_msg.contains(sub_str),
+                    "Query error received is {query_err_msg}. It should contain {sub_str}"
                 );
             }
             TestExpectation::Ok(sub_str) => {
@@ -386,23 +247,20 @@ mod test {
 
     #[test]
     fn test_build_query() {
-        check_build_query("*", Vec::new(), None, TestExpectation::Ok("All"));
+        check_build_query("*", Vec::new(), TestExpectation::Ok("All"));
         check_build_query(
             "foo:bar",
             Vec::new(),
-            None,
             TestExpectation::Err("Field does not exist: 'foo'"),
         );
         check_build_query(
             "server.type:hpc server.mem:4GB",
             Vec::new(),
-            None,
             TestExpectation::Err("Field does not exist: 'server.type'"),
         );
         check_build_query(
             "title:[a TO b]",
             Vec::new(),
-            None,
             TestExpectation::Err(
                 "Field `title` is of type `Str`. Range queries are only supported on boolean, \
                  datetime, IP, and numeric fields",
@@ -411,7 +269,6 @@ mod test {
         check_build_query(
             "title:{a TO b} desc:foo",
             Vec::new(),
-            None,
             TestExpectation::Err(
                 "Field `title` is of type `Str`. Range queries are only supported on boolean, \
                  datetime, IP, and numeric fields",
@@ -420,7 +277,6 @@ mod test {
         check_build_query(
             "title:>foo",
             Vec::new(),
-            None,
             TestExpectation::Err(
                 "Field `title` is of type `Str`. Range queries are only supported on boolean, \
                  datetime, IP, and numeric fields",
@@ -429,61 +285,51 @@ mod test {
         check_build_query(
             "title:foo desc:bar _source:baz",
             Vec::new(),
-            None,
             TestExpectation::Ok("TermQuery"),
         );
         check_build_query(
             "title:foo desc:bar",
             vec!["url".to_string()],
-            None,
             TestExpectation::Err("field does not exist: 'url'"),
         );
         check_build_query(
             "server.name:\".bar:\" server.mem:4GB",
             vec!["server.name".to_string()],
-            None,
             TestExpectation::Ok("TermQuery"),
         );
         check_build_query(
             "server.name:\"for.bar:b\" server.mem:4GB",
             Vec::new(),
-            None,
             TestExpectation::Ok("TermQuery"),
         );
         check_build_query(
             "foo",
             Vec::new(),
-            Some(Vec::new()),
             TestExpectation::Err("No default field declared and no field specified in query."),
         );
         check_build_query(
             "bar",
             Vec::new(),
-            Some(vec![DYNAMIC_FIELD_NAME.to_string()]),
             TestExpectation::Err("No default field declared and no field specified in query."),
         );
         check_build_query(
             "title:hello AND (Jane OR desc:world)",
             Vec::new(),
-            Some(vec![DYNAMIC_FIELD_NAME.to_string()]),
             TestExpectation::Err("No default field declared and no field specified in query."),
         );
         check_build_query(
             "server.running:true",
             Vec::new(),
-            None,
             TestExpectation::Ok("TermQuery"),
         );
         check_build_query(
             "title: IN [hello]",
             Vec::new(),
-            None,
             TestExpectation::Ok("TermSetQuery"),
         );
         check_build_query(
             "IN [hello]",
             Vec::new(),
-            None,
             TestExpectation::Err("Unsupported query: Set query need to target a specific field."),
         );
     }
@@ -493,13 +339,11 @@ mod test {
         check_build_query(
             "dt:[2023-01-10T15:13:35Z TO 2023-01-10T15:13:40Z]",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"dt\", value_type: Date"),
         );
         check_build_query(
             "dt:<2023-01-10T15:13:35Z",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"dt\", value_type: Date"),
         );
     }
@@ -509,7 +353,6 @@ mod test {
         check_build_query(
             "ip:[127.0.0.1 TO 127.1.1.1]",
             Vec::new(),
-            None,
             TestExpectation::Ok(
                 "RangeQuery { field: \"ip\", value_type: IpAddr, left_bound: Included([0, 0, 0, \
                  0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1]), right_bound: Included([0, 0, 0, \
@@ -519,7 +362,6 @@ mod test {
         check_build_query(
             "ip:>127.0.0.1",
             Vec::new(),
-            None,
             TestExpectation::Ok(
                 "RangeQuery { field: \"ip\", value_type: IpAddr, left_bound: Excluded([0, 0, 0, \
                  0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1]), right_bound: Unbounded",
@@ -532,13 +374,11 @@ mod test {
         check_build_query(
             "f64_fast:[7.7 TO 77.7]",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"f64_fast\", value_type: F64"),
         );
         check_build_query(
             "f64_fast:>7",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"f64_fast\", value_type: F64"),
         );
     }
@@ -548,13 +388,11 @@ mod test {
         check_build_query(
             "i64_fast:[-7 TO 77]",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"i64_fast\", value_type: I64"),
         );
         check_build_query(
             "i64_fast:>7",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"i64_fast\", value_type: I64"),
         );
     }
@@ -564,13 +402,11 @@ mod test {
         check_build_query(
             "u64_fast:[7 TO 77]",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"u64_fast\", value_type: U64"),
         );
         check_build_query(
             "u64_fast:>7",
             Vec::new(),
-            None,
             TestExpectation::Ok("RangeQuery { field: \"u64_fast\", value_type: U64"),
         );
     }
@@ -580,7 +416,6 @@ mod test {
         check_build_query(
             "ips:[127.0.0.1 TO 127.1.1.1]",
             Vec::new(),
-            None,
             TestExpectation::Ok(
                 "RangeQuery { field: \"ips\", value_type: IpAddr, left_bound: Included([0, 0, 0, \
                  0, 0, 0, 0, 0, 0, 0, 255, 255, 127, 0, 0, 1]), right_bound: Included([0, 0, 0, \
@@ -594,8 +429,7 @@ mod test {
         check_build_query(
             "ip_notff:[127.0.0.1 TO 127.1.1.1]",
             Vec::new(),
-            None,
-            TestExpectation::Err("field `ip_notff` is not declared as a fast field"),
+            TestExpectation::Err("`ip_notff` is not a fast field"),
         );
     }
 
@@ -604,13 +438,12 @@ mod test {
         query_str: &str,
         search_fields: Vec<String>,
         snippet_fields: Vec<String>,
-        default_search_fields: Option<Vec<String>>,
     ) -> anyhow::Result<()> {
         let schema = make_schema();
         let request = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
-            query: query_str.to_string(),
+            query_ast: query_string(query_str).unwrap(),
             search_fields,
             snippet_fields,
             start_timestamp: None,
@@ -620,13 +453,16 @@ mod test {
             sort_order: None,
             sort_by_field: None,
         };
-        let user_input_ast = tantivy::query_grammar::parse_query(&request.query)
-            .map_err(|_| QueryParserError::SyntaxError(request.query.clone()))
-            .unwrap();
-        let default_field_names =
-            default_search_fields.unwrap_or_else(|| vec!["title".to_string(), "desc".to_string()]);
+        todo!();
+        // let user_input_ast = tantivy::query_grammar::parse_query(request.query.as_ref().unwrap())
+        //     .map_err(|_| QueryParserError::SyntaxError(request.query.clone().unwrap()))
+        //     .unwrap();
+        // let default_field_names =
+        //     default_search_fields.unwrap_or_else(|| vec!["title".to_string(),
+        // "desc".to_string()]);
 
-        validate_requested_snippet_fields(&schema, &request, &user_input_ast, &default_field_names)
+        // validate_requested_snippet_fields(&schema, &request, &user_input_ast,
+        // &default_field_names)
     }
 
     #[test]
@@ -634,35 +470,28 @@ mod test {
         check_build_query(
             "server.running:not a bool",
             Vec::new(),
-            None,
-            TestExpectation::Err("Expected a bool value: 'ParseBoolError'"),
+            TestExpectation::Err("Expected a `bool` search value for field `server.running`"),
         );
     }
 
     #[test]
     fn test_validate_requested_snippet_fields() {
         let validation_result =
-            check_snippet_fields_validation("foo", Vec::new(), vec!["desc".to_string()], None);
+            check_snippet_fields_validation("foo", Vec::new(), vec!["desc".to_string()]);
         assert!(validation_result.is_ok());
         let validation_result = check_snippet_fields_validation(
             "foo",
-            Vec::new(),
+            vec!["foo".to_string()],
             vec!["desc".to_string()],
-            Some(vec!["desc".to_string()]),
         );
         assert!(validation_result.is_ok());
-        let validation_result = check_snippet_fields_validation(
-            "desc:foo",
-            Vec::new(),
-            vec!["desc".to_string()],
-            Some(Vec::new()),
-        );
+        let validation_result =
+            check_snippet_fields_validation("desc:foo", Vec::new(), vec!["desc".to_string()]);
         assert!(validation_result.is_ok());
         let validation_result = check_snippet_fields_validation(
             "foo",
             vec!["desc".to_string()],
             vec!["desc".to_string()],
-            Some(Vec::new()),
         );
         assert!(validation_result.is_ok());
 
@@ -671,19 +500,14 @@ mod test {
             "foo",
             vec!["summary".to_string()],
             vec!["summary".to_string()],
-            None,
         );
         assert_eq!(
             validation_result.unwrap_err().to_string(),
             "The field does not exist: 'summary'"
         );
         // Unknown searched field
-        let validation_result = check_snippet_fields_validation(
-            "foo",
-            Vec::new(),
-            vec!["server.name".to_string()],
-            None,
-        );
+        let validation_result =
+            check_snippet_fields_validation("foo", Vec::new(), vec!["server.name".to_string()]);
         assert_eq!(
             validation_result.unwrap_err().to_string(),
             "The snippet field `server.name` should be a default search field or appear in the \
@@ -694,12 +518,11 @@ mod test {
             "server.name:foo",
             Vec::new(),
             vec!["server.name".to_string()],
-            None,
         );
         assert!(validation_result.is_ok());
         // Not stored field
         let validation_result =
-            check_snippet_fields_validation("foo", Vec::new(), vec!["title".to_string()], None);
+            check_snippet_fields_validation("foo", Vec::new(), vec!["title".to_string()]);
         assert_eq!(
             validation_result.unwrap_err().to_string(),
             "The snippet field `title` must be stored."
@@ -709,7 +532,6 @@ mod test {
             "foo",
             vec!["server.running".to_string()],
             vec!["server.running".to_string()],
-            None,
         );
         assert_eq!(
             validation_result.unwrap_err().to_string(),
@@ -722,7 +544,7 @@ mod test {
         let request_with_set = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
-            query: "title: IN [hello]".to_string(),
+            query_ast: query_string("title: IN [hello]").unwrap(),
             search_fields: Vec::new(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
@@ -735,7 +557,7 @@ mod test {
         let request_without_set = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
-            query: "title:hello".to_string(),
+            query_ast: query_string("title:hello").unwrap(),
             search_fields: Vec::new(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
@@ -746,16 +568,13 @@ mod test {
             sort_by_field: None,
         };
 
-        let default_field_names = vec!["title".to_string(), "desc".to_string()];
-
-        let (_, warmup_info) = build_query(make_schema(), &request_with_set, &default_field_names)?;
+        let (_, warmup_info) = build_query(&request_with_set, make_schema(), true)?;
         assert_eq!(warmup_info.term_dict_field_names.len(), 1);
         assert_eq!(warmup_info.posting_field_names.len(), 1);
         assert!(warmup_info.term_dict_field_names.contains("title"));
         assert!(warmup_info.posting_field_names.contains("title"));
 
-        let (_, warmup_info) =
-            build_query(make_schema(), &request_without_set, &default_field_names)?;
+        let (_, warmup_info) = build_query(&request_without_set, make_schema(), true)?;
         assert!(warmup_info.term_dict_field_names.is_empty());
         assert!(warmup_info.posting_field_names.is_empty());
 

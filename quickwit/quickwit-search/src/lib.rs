@@ -30,7 +30,6 @@ mod fetch_docs;
 mod filters;
 mod find_trace_ids_collector;
 mod leaf;
-mod query_dsl;
 mod retry;
 mod root;
 mod search_job_placer;
@@ -40,16 +39,17 @@ mod service;
 mod thread_pool;
 
 mod metrics;
+
 #[cfg(test)]
 mod tests;
 
 pub use collector::QuickwitAggregations;
 use metrics::SEARCH_METRICS;
 use quickwit_doc_mapper::DocMapper;
+use quickwit_query::quickwit_query_ast::QueryAst;
 use root::validate_request;
 use service::SearcherContext;
 use tantivy::aggregation::AggregationLimits;
-use tantivy::query::Query as TantivyQuery;
 use tantivy::schema::NamedFieldDocument;
 
 /// Refer to this as `crate::Result<T>`.
@@ -132,7 +132,13 @@ async fn list_relevant_splits(
         query = query.with_time_range_end_lt(end_ts);
     }
 
-    if let Some(tags_filter) = extract_tags_from_query(&search_request.query)? {
+    let query_ast: QueryAst = serde_json::from_str(&search_request.query_ast).map_err(|_| {
+        SearchError::InternalError(format!(
+            "Failed to deserialize query_ast: `{}`",
+            search_request.query_ast
+        ))
+    })?;
+    if let Some(tags_filter) = extract_tags_from_query(query_ast) {
         query = query.with_tags_filter(tags_filter);
     }
 
@@ -188,10 +194,8 @@ pub async fn single_node_search(
             SearchError::InternalError(format!("Failed to build doc mapper. Cause: {err}"))
         })?;
 
-    validate_request(search_request)?;
+    validate_request(&*doc_mapper, search_request)?;
 
-    // Validates the query by effectively building it against the current schema.
-    doc_mapper.query(doc_mapper.schema(), search_request)?;
     let searcher_context = Arc::new(SearcherContext::new(SearcherConfig::default()));
     let leaf_search_response = leaf_search(
         searcher_context.clone(),

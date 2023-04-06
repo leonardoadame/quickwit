@@ -142,8 +142,9 @@ async fn leaf_search_stream_single_split(
         ));
     }
 
-    let search_request = Arc::new(SearchRequest::from(stream_request.clone()));
-    let (query, mut warmup_info) = doc_mapper.query(split_schema.clone(), &search_request)?;
+    let search_request = Arc::new(SearchRequest::try_from(stream_request.clone())?);
+    let (query, mut warmup_info) =
+        doc_mapper.query(split_schema.clone(), &search_request, false)?;
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -214,7 +215,7 @@ async fn leaf_search_stream_single_split(
                     &m_request_fields,
                     timestamp_filter_builder_opt,
                     &searcher,
-                    query.as_ref(),
+                    &query,
                 )?;
                 // It may seem overkill and expensive considering DateTime is just a wrapper
                 // over the i64, but the compiler is smarter than it looks and the code
