@@ -75,6 +75,18 @@ impl From<TantivyError> for SearchError {
     }
 }
 
+impl<T: std::fmt::Debug> From<ciborium::de::Error<T>> for SearchError {
+    fn from(error: ciborium::de::Error<T>) -> Self {
+        SearchError::InternalError(format!("Deserialize error: {error}"))
+    }
+}
+
+impl<T: std::fmt::Debug> From<ciborium::ser::Error<T>> for SearchError {
+    fn from(error: ciborium::ser::Error<T>) -> Self {
+        SearchError::InternalError(format!("Serialize error: {error}"))
+    }
+}
+
 impl From<serde_json::Error> for SearchError {
     fn from(serde_error: serde_json::Error) -> Self {
         SearchError::InternalError(format!("Serde error: {serde_error}"))

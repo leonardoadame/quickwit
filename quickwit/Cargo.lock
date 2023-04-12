@@ -4796,6 +4796,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chitchat",
+ "ciborium",
  "fnv",
  "futures",
  "http",

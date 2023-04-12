@@ -27,8 +27,7 @@ use quickwit_proto::opentelemetry::proto::common::v1::any_value::Value as OtlpVa
 use quickwit_proto::opentelemetry::proto::common::v1::{
     AnyValue as OtlpAnyValue, KeyValue as OtlpKeyValue,
 };
-use serde;
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{self, de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 use tracing::warn;
 
@@ -44,6 +43,22 @@ pub use trace::{
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct TraceId([u8; 16]);
+
+impl Serialize for TraceId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let b64trace_id = BASE64_STANDARD.encode(self.0);
+        serializer.serialize_str(&b64trace_id)
+    }
+}
+
+impl<'de> Deserialize<'de> for TraceId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: Deserializer<'de> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(de::Error::custom)
+    }
+}
 
 impl TraceId {
     pub const BASE64_LENGTH: usize = 24;
@@ -62,22 +77,6 @@ impl TraceId {
 
     pub fn base64_display(&self) -> Base64Display<'_, '_, GeneralPurpose> {
         Base64Display::new(&self.0, &BASE64_STANDARD)
-    }
-}
-
-impl Serialize for TraceId {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let b64trace_id = BASE64_STANDARD.encode(self.0);
-        serializer.serialize_str(&b64trace_id)
-    }
-}
-
-impl<'de> Deserialize<'de> for TraceId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: Deserializer<'de> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(de::Error::custom)
     }
 }
 

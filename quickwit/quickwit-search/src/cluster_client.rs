@@ -172,11 +172,13 @@ fn merge_leaf_search_results(
                     if let Some(res2_str) = retry_response.intermediate_aggregation_result.as_ref()
                     {
                         let mut res1: IntermediateAggregationResults =
-                            serde_json::from_str(&res1_str)?;
-                        let res2: IntermediateAggregationResults = serde_json::from_str(res2_str)?;
+                            ciborium::de::from_reader(&mut res1_str.as_slice())?;
+                        let res2: IntermediateAggregationResults =
+                            ciborium::de::from_reader(&mut res2_str.as_slice())?;
                         res1.merge_fruits(res2)?;
-                        let res = serde_json::to_string(&res1)?;
-                        Ok(res)
+                        let mut serialized = Vec::new();
+                        ciborium::ser::into_writer(&res1, &mut serialized)?;
+                        Ok(serialized)
                     } else {
                         Ok(res1_str)
                     }
