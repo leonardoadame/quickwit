@@ -48,6 +48,7 @@ impl ClusterClient {
     }
 
     /// Fetches docs with retry on another node client.
+    #[tracing::instrument(skip(self, client))]
     pub async fn fetch_docs(
         &self,
         request: FetchDocsRequest,
@@ -72,6 +73,7 @@ impl ClusterClient {
     }
 
     /// Leaf search with retry on another node client.
+    #[tracing::instrument(skip(self, client))]
     pub async fn leaf_search(
         &self,
         request: LeafSearchRequest,

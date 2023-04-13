@@ -132,20 +132,30 @@ impl SearchServiceClient {
     }
 
     /// Perform leaf search.
+    #[tracing::instrument(skip(self))]
     pub async fn leaf_search(
         &mut self,
         request: quickwit_proto::LeafSearchRequest,
     ) -> crate::Result<quickwit_proto::LeafSearchResponse> {
         match &mut self.client_impl {
             SearchServiceClientImpl::Grpc(grpc_client) => {
+                tracing::info!("using grpc");
                 let tonic_request = Request::new(request);
+                tracing::info!("request created");
                 let tonic_response = grpc_client
                     .leaf_search(tonic_request)
+                    .instrument(info_span!("grpc request"))
                     .await
                     .map_err(|tonic_error| parse_grpc_error(&tonic_error))?;
-                Ok(tonic_response.into_inner())
+                tracing::info!("request answered");
+                let res = Ok(tonic_response.into_inner());
+                tracing::info!("into innered");
+                res
             }
-            SearchServiceClientImpl::Local(service) => service.leaf_search(request).await,
+            SearchServiceClientImpl::Local(service) => {
+                tracing::info!("using local");
+                service.leaf_search(request).await
+            }
         }
     }
 
@@ -204,20 +214,32 @@ impl SearchServiceClient {
     }
 
     /// Perform fetch docs.
+    #[tracing::instrument(skip(self))]
     pub async fn fetch_docs(
         &mut self,
         request: quickwit_proto::FetchDocsRequest,
     ) -> crate::Result<quickwit_proto::FetchDocsResponse> {
         match &mut self.client_impl {
             SearchServiceClientImpl::Grpc(grpc_client) => {
+                tracing::info!("using grpc");
                 let tonic_request = Request::new(request);
+                tracing::info!("request created");
                 let tonic_response = grpc_client
                     .fetch_docs(tonic_request)
-                    .await
-                    .map_err(|tonic_error| parse_grpc_error(&tonic_error))?;
-                Ok(tonic_response.into_inner())
+                    .instrument(info_span!("grpc request"))
+                    .await;
+                tracing::info!("request answered");
+                let tonic_response =
+                    tonic_response.map_err(|tonic_error| parse_grpc_error(&tonic_error))?;
+                tracing::info!("rpc error mapped");
+                let res = Ok(tonic_response.into_inner());
+                tracing::info!("into innered");
+                res
             }
-            SearchServiceClientImpl::Local(service) => service.fetch_docs(request).await,
+            SearchServiceClientImpl::Local(service) => {
+                tracing::info!("using local");
+                service.fetch_docs(request).await
+            }
         }
     }
 
