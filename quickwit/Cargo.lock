@@ -645,6 +645,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "itertools",
  "rand 0.8.5",
  "serde",
  "tokio",

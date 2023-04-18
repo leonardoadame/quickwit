@@ -73,7 +73,7 @@ impl Cost for ReplicateRequest {
     }
 }
 
-type LogId = String;
+type QueueId = String;
 
 pub struct IngestApiService {
     node_id: NodeId,
@@ -81,7 +81,7 @@ pub struct IngestApiService {
     queues: Queues,
     metastore: Arc<dyn Metastore>,
     pool: IngestServiceClientPool,
-    shards: HashMap<LogId, Shard>,
+    shards: HashMap<QueueId, Shard>,
     memory_limit: usize,
     disk_limit: usize,
     memory_capacity: MemoryCapacity,
@@ -260,9 +260,9 @@ impl IngestApiService {
     // This is your fat ingest client.
     async fn ingest_v2(&mut self, request: IngestRequestV2) -> crate::Result<IngestResponseV2> {
         let source_id = "_ingest-api-source-v2";
-        // TODO: group doc batches by assigned shard id and execute requests in parallel
+        // TODO: Open issue for grouping doc batches by leader ID and execute requests in parallel.
         for doc_batch in request.doc_batches {
-            // TODO: cache list of open shards
+            // TODO: Open issue for caching list of open shards.
             let list_shards_response = self
                 // .pool
                 // .any_node()
@@ -275,8 +275,10 @@ impl IngestApiService {
                 let index_id = doc_batch.index_id.clone();
                 let source_id = source_id.to_string();
                 let shard_id = list_shards_response.next_shard_id;
+                // TODO: Open issue for shard placemement logic.
                 let leader_id = self.node_id.clone();
-                // TODO: balance across ingesters
+                // TODO: Open issue for shard placement logic and picking followers.
+                // TODO: Open issue for disk and memory limits if leader and follower are ....
                 let follower_id = self.pool.find_node(|node_id| node_id != &leader_id).await;
                 let start_position = None;
                 let shard = Shard::new(

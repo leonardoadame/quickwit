@@ -68,6 +68,7 @@ impl Into<u64> for ShardId {
     }
 }
 
+/// TODO: Replace with [`PartitionDelta`].
 /// (`from_position`, `to_position`]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ShardDelta {
