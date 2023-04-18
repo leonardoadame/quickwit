@@ -186,7 +186,9 @@ message DeleteQuery {
   // If set, restrict search to documents with a `timestamp < end_timestamp``.
   optional int64 end_timestamp = 3;
   // Query text. The query language is that of tantivy.
-  string query = 4;
+//   string query = 4;
+  // Query AST serialized in JSON
+  string query_ast = 6;
   // Search fields.
   repeated string search_fields = 5;
 }

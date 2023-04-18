@@ -37,7 +37,7 @@ impl TermSetQuery {
         for (full_path, values) in &self.terms_per_field {
             for value in values {
                 // We simplify the logic by calling compute_query, and extract the resulting terms.
-                let ast = utils::compute_query(full_path, value, false, schema)?;
+                let ast = utils::compute_query(full_path, value, 0, false, schema)?;
                 let tantivy_query: Box<dyn crate::TantivyQuery> = ast.simplify().into();
                 tantivy_query.query_terms(&mut |term, _| {
                     terms.insert(term.clone());

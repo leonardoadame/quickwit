@@ -34,7 +34,7 @@ use quickwit_directories::UnionDirectory;
 use quickwit_doc_mapper::DocMapper;
 use quickwit_metastore::{Metastore, SplitMetadata};
 use quickwit_proto::metastore_api::DeleteTask;
-use quickwit_proto::{query_string, SearchRequest};
+use quickwit_proto::SearchRequest;
 use quickwit_query::get_quickwit_tokenizer_manager;
 use tantivy::directory::{DirectoryClone, MmapDirectory, RamDirectory};
 use tantivy::{DateTime, Directory, Index, IndexMeta, SegmentId, SegmentReader};
@@ -466,11 +466,10 @@ impl MergeExecutor {
                     .expect("A delete task must have a delete query.");
                 let search_request = SearchRequest {
                     index_id: delete_query.index_id,
-                    query_ast: query_string(&delete_query.query)?,
+                    query_ast: delete_query.query_ast,
                     start_timestamp: delete_query.start_timestamp,
                     end_timestamp: delete_query.end_timestamp,
-                    search_fields: delete_query.search_fields,
-                    ..Default::default()
+                    .. Default::default()
                 };
                 debug!(
                     "Delete all documents matched by query `{:?}`",
@@ -678,7 +677,11 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query: delete_query.to_string(),
+                query_ast: quickwit_proto::query_string_with_default_fields(
+                    delete_query,
+                    &["body"],
+                )
+                .unwrap(),
                 search_fields: Vec::new(),
             })
             .await?;

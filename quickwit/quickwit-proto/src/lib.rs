@@ -191,16 +191,11 @@ impl TryFrom<SearchStreamRequest> for SearchRequest {
     fn try_from(search_stream_req: SearchStreamRequest) -> Result<Self, Self::Error> {
         Ok(Self {
             index_id: search_stream_req.index_id,
-            query_ast: quickwit_query::query_string(&search_stream_req.query)?,
-            search_fields: search_stream_req.search_fields,
+            query_ast: search_stream_req.query_ast,
             snippet_fields: search_stream_req.snippet_fields,
             start_timestamp: search_stream_req.start_timestamp,
             end_timestamp: search_stream_req.end_timestamp,
-            max_hits: 0,
-            start_offset: 0,
-            sort_by_field: None,
-            sort_order: None,
-            aggregation_request: None,
+            .. Default::default()
         })
     }
 }
@@ -211,10 +206,9 @@ impl TryFrom<DeleteQuery> for SearchRequest {
     fn try_from(delete_query: DeleteQuery) -> anyhow::Result<Self> {
         Ok(Self {
             index_id: delete_query.index_id,
-            query_ast: query_string(&delete_query.query)?,
+            query_ast: delete_query.query_ast,
             start_timestamp: delete_query.start_timestamp,
             end_timestamp: delete_query.end_timestamp,
-            search_fields: delete_query.search_fields,
             ..Default::default()
         })
     }

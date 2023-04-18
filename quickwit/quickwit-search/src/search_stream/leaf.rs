@@ -444,6 +444,7 @@ mod tests {
     use itertools::Itertools;
     use quickwit_config::SearcherConfig;
     use quickwit_indexing::TestSandbox;
+    use quickwit_proto::query_string_with_default_fields;
     use serde_json::json;
     use tantivy::time::{Duration, OffsetDateTime};
 
@@ -479,8 +480,8 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query: "info".to_string(),
-            search_fields: Vec::new(),
+            query_ast: query_string_with_default_fields("info", &["body"]).unwrap(),
+            search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),
@@ -557,8 +558,8 @@ mod tests {
             .unix_timestamp();
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query: "info".to_string(),
-            search_fields: Vec::new(),
+            query_ast: query_string_with_default_fields("info", &["body"]).unwrap(),
+            search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),
@@ -614,8 +615,8 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query: "info".to_string(),
-            search_fields: Vec::new(),
+            query_ast: query_string_with_default_fields("info", &["body"]).unwrap(),
+            search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: None,
@@ -642,11 +643,9 @@ mod tests {
         )
         .await;
         let res = single_node_stream.next().await.expect("no leaf result");
-        assert!(res
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("Search stream does not support fast field of type `Str`"),);
+        let error_message = res.unwrap_err().to_string();
+        dbg!(&error_message);
+        assert!(error_message.contains("Search stream does not support fast field of type `Str`"),);
         test_sandbox.assert_quit().await;
         Ok(())
     }
@@ -707,8 +706,8 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query: "info".to_string(),
-            search_fields: Vec::new(),
+            query_ast: query_string_with_default_fields("info", &["body"]).unwrap(),
+            search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),

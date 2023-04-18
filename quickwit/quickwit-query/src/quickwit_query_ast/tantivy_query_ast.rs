@@ -58,7 +58,7 @@ impl TantivyQueryAst {
     pub fn simplify(self) -> TantivyQueryAst {
         match self {
             TantivyQueryAst::Bool(bool_query) => bool_query.simplify(),
-            ast @ _ => ast,
+            ast => ast,
         }
     }
 }
@@ -69,9 +69,9 @@ impl<Q: TantivyQuery> From<Q> for TantivyQueryAst {
     }
 }
 
-impl Into<Box<dyn TantivyQuery>> for TantivyQueryAst {
-    fn into(self) -> Box<dyn TantivyQuery> {
-        match self {
+impl From<TantivyQueryAst> for Box<dyn TantivyQuery> {
+    fn from(boxed_tantivy_query: TantivyQueryAst) -> Box<dyn TantivyQuery> {
+        match boxed_tantivy_query {
             TantivyQueryAst::Bool(boolean_query) => boolean_query.into(),
             TantivyQueryAst::Leaf(leaf) => leaf,
             TantivyQueryAst::ConstPredicate(always_or_never_match) => match always_or_never_match {
@@ -141,22 +141,25 @@ impl From<TantivyBoolQuery> for TantivyQueryAst {
     }
 }
 
-impl Into<Box<dyn TantivyQuery>> for TantivyBoolQuery {
-    fn into(self) -> Box<dyn TantivyQuery> {
+impl From<TantivyBoolQuery> for Box<dyn TantivyQuery> {
+    fn from(bool_query: TantivyBoolQuery) -> Box<dyn TantivyQuery> {
         let mut clause: Vec<(Occur, Box<dyn TantivyQuery>)> = Vec::with_capacity(
-            self.must.len() + self.must_not.len() + self.should.len() + self.filter.len(),
+            bool_query.must.len()
+                + bool_query.must_not.len()
+                + bool_query.should.len()
+                + bool_query.filter.len(),
         );
         for (occur, child_asts) in [
-            (Occur::Must, self.must),
-            (Occur::MustNot, self.must_not),
-            (Occur::Should, self.should),
+            (Occur::Must, bool_query.must),
+            (Occur::MustNot, bool_query.must_not),
+            (Occur::Should, bool_query.should),
         ] {
             for child_ast in child_asts {
                 let sub_query = child_ast.into();
                 clause.push((occur, sub_query));
             }
         }
-        for filter_child in self.filter {
+        for filter_child in bool_query.filter {
             let filter_query = filter_child.into();
             clause.push((
                 Occur::Must,

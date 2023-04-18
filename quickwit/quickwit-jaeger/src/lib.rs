@@ -257,11 +257,7 @@ impl JaegerService {
             max_hits,
             start_timestamp: min_span_start_timestamp_secs_opt,
             end_timestamp: max_span_start_timestamp_secs_opt,
-            search_fields: Vec::new(),
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
-            snippet_fields: Vec::new(),
+            .. Default::default()
         };
         let search_response = self.search_service.root_search(search_request).await?;
 
@@ -304,15 +300,10 @@ impl JaegerService {
             query_ast: query_string(&query).map_err(|_| {
                 Status::new(Code::InvalidArgument, format!("Invalid query: `{query}`."))
             })?,
-            search_fields: Vec::new(),
             start_timestamp: Some(*search_window.start()),
             end_timestamp: Some(*search_window.end()),
             max_hits: self.max_fetch_spans,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
-            aggregation_request: None,
-            snippet_fields: Vec::new(),
+            .. Default::default()
         };
         let search_response = match self.search_service.root_search(search_request).await {
             Ok(search_response) => search_response,

@@ -29,9 +29,13 @@ use crate::InvalidQuery;
 /// - named queries
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Default)]
 pub struct BoolQuery {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub must: Vec<QueryAst>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub must_not: Vec<QueryAst>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub should: Vec<QueryAst>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filter: Vec<QueryAst>,
 }
 

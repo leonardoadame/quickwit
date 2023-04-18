@@ -67,11 +67,13 @@ message SearchRequest {
   // Index ID
   string index_id = 1;
 
+//   string query = 2 [deprecated];
+
   // Json object representing Quickwit's QueryAst.
   string query_ast = 13;
 
   // Fields to search on
-  repeated string  search_fields = 3;
+//   repeated string  search_fields = 3 [deprecated];
 
   // Time filter, expressed in seconds since epoch.
   // That filter is to be interpreted as the semi-open interval:
@@ -349,9 +351,9 @@ message SearchStreamRequest {
   // Index ID
   string index_id = 1;
 
-  // Query in tantivy query format
-  // TODO switch to query ast
-  string query = 2;
+  // Quickwit Query AST encoded in Json
+//   string query = 2 [deprecated = true];
+  string query_ast = 11;
 
   // Fields to search on
   repeated string  search_fields = 3;

@@ -24,7 +24,9 @@ use quickwit_config::SearcherConfig;
 use quickwit_doc_mapper::DefaultDocMapper;
 use quickwit_indexing::TestSandbox;
 use quickwit_opentelemetry::otlp::TraceId;
-use quickwit_proto::{query_string, LeafListTermsResponse, SearchRequest, SortOrder};
+use quickwit_proto::{
+    query_string, query_string_with_default_fields, LeafListTermsResponse, SearchRequest, SortOrder,
+};
 use serde_json::{json, Value as JsonValue};
 use tantivy::schema::Value as TantivyValue;
 use tantivy::time::OffsetDateTime;
@@ -56,12 +58,8 @@ async fn test_single_node_simple() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("anthropomorphic").unwrap(),
-        search_fields: vec!["body".to_string()],
-        start_timestamp: None,
-        end_timestamp: None,
+        query_ast: query_string_with_default_fields("anthropomorphic", &["body"]).unwrap(),
         max_hits: 2,
-        start_offset: 0,
         ..Default::default()
     };
     let single_node_result = single_node_search(
@@ -146,13 +144,9 @@ async fn test_single_search_with_snippet() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("beagle").unwrap(),
-        search_fields: vec!["title".to_string(), "body".to_string()],
+        query_ast: query_string_with_default_fields("beagle", &["title", "body"]).unwrap(),
         snippet_fields: vec!["title".to_string(), "body".to_string()],
-        start_timestamp: None,
-        end_timestamp: None,
         max_hits: 2,
-        start_offset: 0,
         ..Default::default()
     };
     let single_node_result = single_node_search(
@@ -187,14 +181,11 @@ async fn slop_search_and_check(
     query: &str,
     expected_num_match: u64,
 ) -> anyhow::Result<()> {
+    let query_ast = query_string_with_default_fields(query, &["body"]).unwrap();
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string(query).unwrap(),
-        search_fields: vec!["body".to_string()],
-        start_timestamp: None,
-        end_timestamp: None,
+        query_ast,
         max_hits: 5,
-        start_offset: 0,
         ..Default::default()
     };
     let single_node_result = single_node_search(
@@ -216,7 +207,7 @@ async fn slop_search_and_check(
 }
 
 #[tokio::test]
-async fn test_slop_queries() -> anyhow::Result<()> {
+async fn test_slop_queries() {
     let index_id = "slop-query";
     let doc_mapping_yaml = r#"
             field_mappings:
@@ -227,7 +218,9 @@ async fn test_slop_queries() -> anyhow::Result<()> {
                 record: position
         "#;
 
-    let test_sandbox = TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["body"]).await?;
+    let test_sandbox = TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["body"])
+        .await
+        .unwrap();
     let docs = vec![
         json!({"title": "one", "body": "a red bike"}),
         json!({"title": "two", "body": "a small blue bike"}),
@@ -235,19 +228,33 @@ async fn test_slop_queries() -> anyhow::Result<()> {
         json!({"title": "four", "body": "fred's small bike"}),
         json!({"title": "five", "body": "a tiny shelter"}),
     ];
-    test_sandbox.add_documents(docs.clone()).await?;
+    test_sandbox.add_documents(docs.clone()).await.unwrap();
 
-    slop_search_and_check(&test_sandbox, index_id, "\"small bird\"~2", 0).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"red bike\"~2", 1).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"small blue bike\"~3", 1).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"", 1).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"~1", 2).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"~2", 2).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"~3", 3).await?;
-    slop_search_and_check(&test_sandbox, index_id, "\"tiny shelter\"~3", 1).await?;
+    slop_search_and_check(&test_sandbox, index_id, "\"small bird\"~2", 0)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"red bike\"~2", 1)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"small blue bike\"~3", 1)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"", 1)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"~1", 2)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"~2", 2)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"small bike\"~3", 3)
+        .await
+        .unwrap();
+    slop_search_and_check(&test_sandbox, index_id, "\"tiny shelter\"~3", 1)
+        .await
+        .unwrap();
     test_sandbox.assert_quit().await;
-
-    Ok(())
 }
 
 // TODO remove me once `Iterator::is_sorted_by_key` is stabilized.
@@ -296,11 +303,7 @@ async fn test_single_node_several_splits() -> anyhow::Result<()> {
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
         query_ast: query_string("beagle").unwrap(),
-        search_fields: Vec::new(),
-        start_timestamp: None,
-        end_timestamp: None,
         max_hits: 6,
-        start_offset: 0,
         ..Default::default()
     };
     let single_node_result = single_node_search(
@@ -361,12 +364,10 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("info").unwrap(),
-        search_fields: Vec::new(),
+        query_ast: query_string_with_default_fields("info", &["body"]).unwrap(),
         start_timestamp: Some(start_timestamp + 10),
         end_timestamp: Some(start_timestamp + 20),
         max_hits: 15,
-        start_offset: 0,
         sort_by_field: Some("ts".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
@@ -385,12 +386,9 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     // filter on time range [i64::MIN 20[ should only hit first 19 docs because of filtering
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("info").unwrap(),
-        search_fields: Vec::new(),
-        start_timestamp: None,
+        query_ast: query_string_with_default_fields("info", &["body"]).unwrap(),
         end_timestamp: Some(start_timestamp + 20),
         max_hits: 25,
-        start_offset: 0,
         sort_by_field: Some("ts".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
@@ -409,12 +407,8 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     // filter on tag, should return an error since no split is tagged
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("tag:foo AND info").unwrap(),
-        search_fields: Vec::new(),
-        start_timestamp: None,
-        end_timestamp: None,
+        query_ast: query_string_with_default_fields("tag:foo AND info", &["body"]).unwrap(),
         max_hits: 25,
-        start_offset: 0,
         sort_by_field: Some("ts".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
@@ -428,7 +422,7 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     assert!(single_node_response.is_err());
     assert_eq!(
         single_node_response.err().map(|err| err.to_string()),
-        Some("Invalid query: Field does not exist: 'tag'".to_string())
+        Some("Invalid query: Field does not exist: `tag`".to_string())
     );
     test_sandbox.assert_quit().await;
     Ok(())
@@ -496,12 +490,8 @@ async fn single_node_search_sort_by_field(
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("city").unwrap(),
-        search_fields: Vec::new(),
-        start_timestamp: None,
-        end_timestamp: None,
+        query_ast: query_string_with_default_fields("city", &["description"]).unwrap(),
         max_hits: 15,
-        start_offset: 0,
         sort_by_field: Some(sort_by_field.to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
@@ -540,23 +530,107 @@ async fn test_single_node_sorting_with_query() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn test_single_node_sort_by_score_should_fail() -> anyhow::Result<()> {
-    let search_response = single_node_search_sort_by_field("_score", false).await;
-    assert!(search_response.is_err());
-    assert_eq!(
-        search_response.err().map(|err| err.to_string()),
-        Some(
-            "Invalid query: Fieldnorms for field `description` is missing. Fieldnorms must be \
-             stored for the field to compute the BM25 score of the documents."
-                .to_string()
-        )
-    );
-    Ok(())
+fn u64_to_f32(value: u64) -> f32 {
+    const HIGHEST_BIT: u32 = 1 << 31;
+    let value_u32 = value as u32;
+    f32::from_bits(if value_u32 & HIGHEST_BIT != 0 {
+        value_u32 ^ HIGHEST_BIT
+    } else {
+        !value_u32
+    })
 }
 
 #[tokio::test]
-async fn test_single_node_invalid_sorting_with_query() -> anyhow::Result<()> {
+async fn test_sort_bm25() {
+    let index_id = "sort_by_bm25".to_string();
+    let doc_mapping_yaml = r#"
+            field_mappings:
+              - name: title
+                type: text
+                record: freq
+                fieldnorms: true
+              - name: body
+                type: text
+                record: freq
+                fieldnorms: true
+              - name: nofreq
+                type: text
+                record: basic
+                fieldnorms: true
+              - name: nofreq_nofieldnorms
+                type: text
+                fieldnorms: false
+            "#;
+    let default_search_fields = &["title", "body", "nofreq", "nofreq_nofieldnorms"];
+    let test_sandbox = TestSandbox::create(
+        &index_id,
+        doc_mapping_yaml,
+        "{}",
+        &default_search_fields[..],
+    )
+    .await
+    .unwrap();
+    let docs = vec![
+        json!({"title": "one pad", "nofreq": "two pad"}), // 0
+        json!({"title": "one", "nofreq": "two"}),         // 1
+        json!({"title": "one one", "nofreq": "two two"}), // 2
+    ];
+    test_sandbox.add_documents(docs).await.unwrap();
+    let search_hits = |query: &str| {
+        let query_ast_json =
+            query_string_with_default_fields(query, &default_search_fields[..]).unwrap();
+        let search_request = SearchRequest {
+            index_id: index_id.to_string(),
+            query_ast: query_ast_json,
+            max_hits: 1_000,
+            sort_by_field: Some("_score".to_string()),
+            sort_order: Some(SortOrder::Desc as i32),
+            ..Default::default()
+        };
+        let metastore = test_sandbox.metastore();
+        let storage_uri_resolver = test_sandbox.storage_uri_resolver();
+        async move {
+            single_node_search(&search_request, &*metastore, storage_uri_resolver)
+                .await
+                .unwrap()
+                .hits
+                .into_iter()
+                .map(|hit| {
+                    let partial_hit = hit.partial_hit.unwrap();
+                    (
+                        u64_to_f32(partial_hit.sorting_field_value),
+                        partial_hit.doc_id,
+                    )
+                })
+                .collect()
+        }
+    };
+    {
+        let hits: Vec<(f32, u32)> = search_hits("title:one").await;
+        assert_eq!(
+            &hits[..],
+            &[(0.1738279, 2), (0.15965714, 1), (0.12343242, 0)]
+        );
+    }
+    {
+        let hits: Vec<(f32, u32)> = search_hits("nofreq:two").await;
+        assert_eq!(
+            &hits[..],
+            &[(0.15965714, 1), (0.12343242, 0), (0.12343242, 2)]
+        );
+    }
+    {
+        let hits: Vec<(f32, u32)> = search_hits("title:one nofreq:two").await;
+        assert_eq!(
+            &hits[..],
+            &[(0.31931427, 1), (0.2972603, 2), (0.24686484, 0)]
+        );
+    }
+    test_sandbox.assert_quit().await;
+}
+
+#[tokio::test]
+async fn test_single_node_invalid_sorting_with_query() {
     let index_id = "single-node-invalid-sorting";
     let doc_mapping_yaml = r#"
             field_mappings:
@@ -566,24 +640,21 @@ async fn test_single_node_invalid_sorting_with_query() -> anyhow::Result<()> {
               - name: temperature
                 type: i64
         "#;
-    let test_sandbox =
-        TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["description"]).await?;
+    let test_sandbox = TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["description"])
+        .await
+        .unwrap();
 
     let mut docs = Vec::new();
     for i in 0..30 {
         let description = format!("city info-{}", i + 1);
         docs.push(json!({"description": description, "ts": i+1, "temperature": i+32}));
     }
-    test_sandbox.add_documents(docs).await?;
+    test_sandbox.add_documents(docs).await.unwrap();
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("city").unwrap(),
-        search_fields: Vec::new(),
-        start_timestamp: None,
-        end_timestamp: None,
+        query_ast: query_string_with_default_fields("city", &["description"]).unwrap(),
         max_hits: 15,
-        start_offset: 0,
         sort_by_field: Some("description".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
@@ -595,15 +666,12 @@ async fn test_single_node_invalid_sorting_with_query() -> anyhow::Result<()> {
     )
     .await;
     assert!(single_node_response.is_err());
+    let error_msg = single_node_response.unwrap_err().to_string();
     assert_eq!(
-        single_node_response.err().map(|err| err.to_string()),
-        Some(
-            "Invalid query: Sort by field on type text is currently not supported `description`."
-                .to_string()
-        )
+        error_msg,
+        "Sort by field on type text is currently not supported `description`."
     );
     test_sandbox.assert_quit().await;
-    Ok(())
 }
 
 #[tokio::test]
@@ -1015,9 +1083,7 @@ async fn test_single_node_aggregation() -> anyhow::Result<()> {
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
         query_ast: query_string("*").unwrap(),
-        search_fields: vec!["color".to_string()],
         max_hits: 2,
-        start_offset: 0,
         aggregation_request: Some(agg_req.to_string()),
         ..Default::default()
     };
@@ -1090,9 +1156,7 @@ async fn test_single_node_aggregation_missing_fast_field() {
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
         query_ast: query_string("*").unwrap(),
-        search_fields: vec!["color".to_string()],
         max_hits: 2,
-        start_offset: 0,
         aggregation_request: Some(agg_req.to_string()),
         ..Default::default()
     };
@@ -1135,11 +1199,7 @@ async fn test_single_node_with_ip_field() -> anyhow::Result<()> {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_string("*").unwrap(),
-            search_fields: vec!["host".to_string()],
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1154,12 +1214,8 @@ async fn test_single_node_with_ip_field() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("10.10.11.125").unwrap(),
-            search_fields: vec!["host".to_string()],
-            start_timestamp: None,
-            end_timestamp: None,
+            query_ast: query_string_with_default_fields("10.10.11.125", &["host"]).unwrap(),
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1216,11 +1272,7 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
             index_id: index_id.to_string(),
             query_ast: query_string("datetime:[2023-01-10T15:13:36Z TO 2023-01-10T15:13:38Z}")
                 .unwrap(),
-            search_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1236,11 +1288,7 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_string("status_code:[400 TO 401]").unwrap(),
-            search_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1256,11 +1304,7 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_string("host:[10.0.0.0 TO 10.255.255.255]").unwrap(),
-            search_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1276,11 +1320,7 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_string("latency:[100 TO *]").unwrap(),
-            search_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1296,11 +1336,7 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_string("error_code:[-1 TO 1]").unwrap(),
-            search_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(
@@ -1496,11 +1532,6 @@ async fn test_single_node_find_trace_ids_collector() {
             index_id: index_id.to_string(),
             query_ast: query_string("*").unwrap(),
             aggregation_request: Some(aggregations),
-            search_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
-            max_hits: 0,
-            start_offset: 0,
             ..Default::default()
         };
         let single_node_result = single_node_search(

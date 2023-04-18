@@ -23,7 +23,7 @@ use quickwit_config::{build_doc_mapper, IndexConfig};
 use quickwit_janitor::error::JanitorError;
 use quickwit_metastore::{Metastore, MetastoreError};
 use quickwit_proto::metastore_api::{DeleteQuery, DeleteTask};
-use quickwit_proto::SearchRequest;
+use quickwit_proto::{query_string_with_default_fields, SearchRequest};
 use serde::Deserialize;
 use warp::{Filter, Rejection};
 
@@ -134,7 +134,8 @@ pub async fn post_delete_request(
         index_id: index_id.clone(),
         start_timestamp: delete_request.start_timestamp,
         end_timestamp: delete_request.end_timestamp,
-        query: delete_request.query,
+        query_ast: query_string_with_default_fields(&delete_request.query, &[])
+            .map_err(|err| JanitorError::InvalidDeleteQuery(err.to_string()))?,
         search_fields: delete_request.search_fields,
     };
     let index_config: IndexConfig = metastore
@@ -146,9 +147,10 @@ pub async fn post_delete_request(
         .map_err(|error| JanitorError::InternalError(error.to_string()))?;
     let delete_search_request = SearchRequest::try_from(delete_query.clone())
         .map_err(|error| JanitorError::InvalidDeleteQuery(error.to_string()))?;
-    // Validate the delete query.
+
+    // Validate the delete query against the current doc mapping configuration.
     doc_mapper
-        .query(doc_mapper.schema(), &delete_search_request, false)
+        .query(doc_mapper.schema(), &delete_search_request, true)
         .map_err(|error| JanitorError::InvalidDeleteQuery(error.to_string()))?;
     let delete_task = metastore.create_delete_task(delete_query).await?;
     Ok(delete_task)
@@ -184,7 +186,7 @@ mod tests {
             .path("/test-delete-task-rest/delete-tasks")
             .method("POST")
             .json(&true)
-            .body(r#"{"query": "term", "start_timestamp": 1, "end_timestamp": 10}"#)
+            .body(r#"{"query": "body:term", "start_timestamp": 1, "end_timestamp": 10}"#)
             .reply(&delete_query_api_handlers)
             .await;
         assert_eq!(resp.status(), 200);
@@ -192,7 +194,10 @@ mod tests {
         assert_eq!(created_delete_task.opstamp, 1);
         let created_delete_query = created_delete_task.delete_query.unwrap();
         assert_eq!(created_delete_query.index_id, index_id);
-        assert_eq!(created_delete_query.query, "term");
+        assert_eq!(
+            created_delete_query.query_ast,
+            r#"{"type":"Phrase","field":"body","phrase":"term"}"#
+        );
         assert_eq!(created_delete_query.start_timestamp, Some(1));
         assert_eq!(created_delete_query.end_timestamp, Some(10));
 

@@ -8,9 +8,6 @@ pub struct SearchRequest {
     /// Json object representing Quickwit's QueryAst.
     #[prost(string, tag = "13")]
     pub query_ast: ::prost::alloc::string::String,
-    /// Fields to search on
-    #[prost(string, repeated, tag = "3")]
-    pub search_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Time filter, expressed in seconds since epoch.
     /// That filter is to be interpreted as the semi-open interval:
     /// [start_timestamp, end_timestamp).
@@ -323,10 +320,10 @@ pub struct SearchStreamRequest {
     /// Index ID
     #[prost(string, tag = "1")]
     pub index_id: ::prost::alloc::string::String,
-    /// Query in tantivy query format
-    /// TODO switch to query ast
-    #[prost(string, tag = "2")]
-    pub query: ::prost::alloc::string::String,
+    /// Quickwit Query AST encoded in Json
+    ///    string query = 2 [deprecated = true];
+    #[prost(string, tag = "11")]
+    pub query_ast: ::prost::alloc::string::String,
     /// Fields to search on
     #[prost(string, repeated, tag = "3")]
     pub search_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,

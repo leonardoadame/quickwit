@@ -20,7 +20,7 @@
 use std::ops::Bound;
 
 use serde::{Deserialize, Serialize};
-use tantivy::schema::{Schema, Type};
+use tantivy::schema::Schema;
 
 use super::QueryAst;
 use crate::json_literal::InterpretUserInput;

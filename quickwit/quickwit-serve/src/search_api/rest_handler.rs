@@ -189,13 +189,10 @@ async fn search_endpoint(
     let search_fields = search_request.search_fields.unwrap_or_default();
     let search_fields_ref: Vec<&str> = search_fields.iter().map(String::as_str).collect();
     let query_ast = query_string_with_default_fields(&search_request.query, &search_fields_ref)
-        .map_err(|_| {
-            SearchError::InvalidQuery(format!("Invalid query `{}`", search_request.query))
-        })?;
+        .map_err(|_| SearchError::InvalidQuery(search_request.query.to_string()))?;
     let search_request = quickwit_proto::SearchRequest {
         index_id,
         query_ast,
-        search_fields,
         snippet_fields: search_request.snippet_fields.unwrap_or_default(),
         start_timestamp: search_request.start_timestamp,
         end_timestamp: search_request.end_timestamp,
@@ -345,10 +342,19 @@ async fn search_stream_endpoint(
     search_request: SearchStreamRequestQueryString,
     search_service: &dyn SearchService,
 ) -> Result<hyper::Body, SearchError> {
+    let search_fields = search_request.search_fields.unwrap_or_default();
+    let default_search_fields_ref: Vec<&str> = search_fields
+        .iter()
+        .map(|field_name| field_name.as_str())
+        .collect();
     let request = quickwit_proto::SearchStreamRequest {
         index_id,
-        query: search_request.query,
-        search_fields: search_request.search_fields.unwrap_or_default(),
+        query_ast: query_string_with_default_fields(
+            &search_request.query,
+            &default_search_fields_ref[..],
+        )
+        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?,
+        search_fields,
         snippet_fields: search_request.snippet_fields.unwrap_or_default(),
         start_timestamp: search_request.start_timestamp,
         end_timestamp: search_request.end_timestamp,
@@ -792,7 +798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rest_search_stream_api() -> anyhow::Result<()> {
+    async fn test_rest_search_stream_api() {
         let mut mock_search_service = MockSearchService::new();
         mock_search_service
             .expect_root_search_stream()
@@ -804,13 +810,31 @@ mod tests {
             });
         let rest_search_stream_api_handler = search_handler(mock_search_service);
         let response = warp::test::request()
-            .path("/my-index/search/stream?query=obama&fast_field=external_id&output_format=csv")
+            .path(
+                "/my-index/search/stream?query=obama&search_field=body&fast_field=external_id&\
+                 output_format=csv",
+            )
             .reply(&rest_search_stream_api_handler)
             .await;
         assert_eq!(response.status(), 200);
         let body = String::from_utf8_lossy(response.body());
         assert_eq!(body, "first row\nsecond row");
-        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rest_search_stream_api_invalid_query() {
+        let mock_search_service = MockSearchService::new();
+        let rest_search_stream_api_handler = search_handler(mock_search_service);
+        let response = warp::test::request()
+            .path("/my-index/search/stream?query=obama&fast_field=external_id&output_format=csv")
+            .reply(&rest_search_stream_api_handler)
+            .await;
+        assert_eq!(response.status(), 400);
+        let error_msg = String::from_utf8_lossy(response.body());
+        assert_eq!(
+            error_msg,
+            "Query requires a default search field and none was supplied."
+        );
     }
 
     #[tokio::test]
@@ -914,7 +938,10 @@ mod tests {
         });
         let rest_search_api_handler = search_handler(mock_search_service);
         let resp = warp::test::request()
-            .path("/quickwit-demo-index/search?query=bar&snippet_fields=title,body")
+            .path(
+                "/quickwit-demo-index/search?query=bar&search_field=title,body&\
+                 snippet_fields=title,body",
+            )
             .reply(&rest_search_api_handler)
             .await;
 

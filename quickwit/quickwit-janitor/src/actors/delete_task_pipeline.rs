@@ -287,7 +287,7 @@ mod tests {
     use quickwit_indexing::TestSandbox;
     use quickwit_metastore::SplitState;
     use quickwit_proto::metastore_api::DeleteQuery;
-    use quickwit_proto::{LeafSearchRequest, LeafSearchResponse};
+    use quickwit_proto::{query_string, LeafSearchRequest, LeafSearchResponse};
     use quickwit_search::{MockSearchService, SearchError, SearchJobPlacer, SearchServiceClient};
 
     use super::{ActorContext, ActorExitStatus, DeleteTaskPipeline};
@@ -339,7 +339,7 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query: "body:delete".to_string(),
+                query_ast: query_string("body:delete").unwrap(),
                 search_fields: Vec::new(),
             })
             .await

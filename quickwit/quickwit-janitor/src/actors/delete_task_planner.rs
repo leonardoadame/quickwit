@@ -33,8 +33,7 @@ use quickwit_metastore::{
     split_tag_filter, split_time_range_filter, Metastore, MetastoreResult, Split,
 };
 use quickwit_proto::metastore_api::DeleteTask;
-use quickwit_proto::{query_string, SearchRequest};
-use quickwit_query::DefaultOperator;
+use quickwit_proto::SearchRequest;
 use quickwit_search::{jobs_to_leaf_request, SearchJob, SearchJobPlacer};
 use serde::Serialize;
 use tantivy::Inventory;
@@ -161,6 +160,7 @@ impl DeleteTaskPlanner {
 
             let (splits_with_deletes, splits_without_deletes) =
                 self.partition_splits_by_deletes(&stale_splits, ctx).await?;
+
             info!(
                 "{} splits with deletes, {} splits without deletes.",
                 splits_with_deletes.len(),
@@ -237,12 +237,8 @@ impl DeleteTaskPlanner {
                         delete_query.end_timestamp,
                     );
                     // TODO: validate the query at the beginning and return an appropriate error.
-                    let delete_query_ast = quickwit_query::parse_user_query(
-                        &delete_query.query,
-                        &[],
-                        DefaultOperator::And,
-                    )
-                    .expect("Delete query must have been validated upfront.");
+                    let delete_query_ast = serde_json::from_str(&delete_query.query_ast)
+                        .expect("Failed to deserialize query_ast json");
                     let tags_filter = extract_tags_from_query(delete_query_ast);
                     split_time_range_filter(stale_split, time_range.as_ref())
                         && split_tag_filter(stale_split, tags_filter.as_ref())
@@ -298,11 +294,9 @@ impl DeleteTaskPlanner {
                 .expect("Delete task must have a delete query.");
             let search_request = SearchRequest {
                 index_id: delete_query.index_id.clone(),
-                query_ast: query_string(&delete_query.query)?,
+                query_ast: delete_query.query_ast.clone(),
                 start_timestamp: delete_query.start_timestamp,
                 end_timestamp: delete_query.end_timestamp,
-                search_fields: delete_query.search_fields.clone(),
-                max_hits: 0,
                 ..Default::default()
             };
             let leaf_search_request = jobs_to_leaf_request(
@@ -410,7 +404,7 @@ mod tests {
     use quickwit_indexing::TestSandbox;
     use quickwit_metastore::SplitMetadata;
     use quickwit_proto::metastore_api::DeleteQuery;
-    use quickwit_proto::{LeafSearchRequest, LeafSearchResponse};
+    use quickwit_proto::{query_string, LeafSearchRequest, LeafSearchResponse};
     use quickwit_search::{MockSearchService, SearchServiceClient};
     use tantivy::TrackedObject;
 
@@ -462,7 +456,7 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query: "body:delete".to_string(),
+                query_ast: query_string("body:delete").unwrap(),
                 search_fields: Vec::new(),
             })
             .await?;
@@ -471,7 +465,7 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query: "MatchNothing".to_string(),
+                query_ast: query_string("body:MatchNothing").unwrap(),
                 search_fields: Vec::new(),
             })
             .await?;
@@ -484,7 +478,7 @@ mod tests {
             move |request: LeafSearchRequest| {
                 // Search on body:delete should return one hit only on the last split
                 // that should contains the doc.
-                if request.split_offsets[0].split_id != split_id_with_doc_to_delete
+                if request.split_offsets[0].split_id == split_id_with_doc_to_delete
                     && request.search_request.as_ref().unwrap().query_ast
                         == query_string("body:delete").unwrap()
                 {

@@ -112,15 +112,8 @@ async fn test_standalone_server() {
             .root_search(SearchRequest {
                 index_id: "my-new-index".to_string(),
                 query_ast: query_string("body:test").unwrap(),
-                search_fields: Vec::new(),
-                snippet_fields: Vec::new(),
-                start_timestamp: None,
-                end_timestamp: None,
-                aggregation_request: None,
                 max_hits: 10,
-                sort_by_field: None,
-                sort_order: None,
-                start_offset: 0,
+                .. Default::default()
             })
             .await
             .unwrap();
@@ -194,15 +187,8 @@ async fn test_multi_nodes_cluster() {
     let search_request = SearchRequest {
         index_id: "my-new-multi-node-index".to_string(),
         query_ast: query_string("body:test").unwrap(),
-        search_fields: Vec::new(),
-        start_timestamp: None,
-        end_timestamp: None,
-        aggregation_request: None,
         max_hits: 10,
-        sort_by_field: None,
-        sort_order: None,
-        start_offset: 0,
-        snippet_fields: Vec::new(),
+        .. Default::default()
     };
     let search_response_empty = search_client
         .root_search(search_request.clone())

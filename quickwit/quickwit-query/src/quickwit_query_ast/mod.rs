@@ -41,6 +41,7 @@ pub use visitor::QueryAstVisitor;
 use crate::{InvalidQuery, NotNaNf32};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(tag = "type")]
 pub enum QueryAst {
     Bool(BoolQuery),
     Term(TermQuery),

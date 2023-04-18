@@ -70,33 +70,47 @@ fn check_default_search_fields(
     Ok(())
 }
 
+fn validate_requested_snippet_fields(
+    schema: &Schema,
+    snippet_fields: &[String],
+) -> anyhow::Result<()> {
+    for field_name in snippet_fields {
+        let field_entry = schema
+            .get_field(field_name)
+            .map(|field| schema.get_field_entry(field))?;
+        match field_entry.field_type() {
+            FieldType::Str(text_options) => {
+                if !text_options.is_stored() {
+                    return Err(anyhow::anyhow!(
+                        "The snippet field `{}` must be stored.",
+                        field_name
+                    ));
+                }
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "The snippet field `{}` must be of type `Str`, got `{}`.",
+                    field_name,
+                    other.value_type().name()
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build a `Query` with field resolution & forbidding range clauses.
 pub(crate) fn build_query(
     request: &SearchRequest,
     schema: Schema,
     with_validation: bool,
 ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
-    // Check that default fields declared in the schema (or where Json fields).
-    check_default_search_fields(&request.search_fields, &schema)?;
     let query_ast: QueryAst = serde_json::from_str(&request.query_ast)?;
     let mut range_query_fields = RangeQueryFields::default();
     range_query_fields.visit(&query_ast).unwrap();
     let fast_field_names: HashSet<String> = range_query_fields.range_query_field_names;
 
-    // TODO identify if a default field is needed and missing.
-
-    // TODO
-    // validate requested snippet fields:
-    // - snippet fields must be in the query
-    // - snippet fields must be text fields.
-
-    // resolve the query using the default fields given in the query if any, or using hte ones in
-    // the docmapper. -----
-    // validate sort by fields.
-    // parse phrase query if needed.
-    // extract term set
-
-    // validate_requested_snippet_fields(&schema, request, &user_input_ast, default_field_names)?;
+    validate_requested_snippet_fields(&schema, &request.snippet_fields)?;
 
     if let Some(sort_by_field) = &request.sort_by_field {
         validate_sort_by_field(sort_by_field, &schema)?;
@@ -153,7 +167,7 @@ fn extract_term_set_query_fields(query_ast: &QueryAst) -> HashSet<String> {
     visitor.term_dict_fields_to_warm_up
 }
 
-pub(crate) fn validate_sort_by_field(field_name: &str, schema: &Schema) -> anyhow::Result<()> {
+fn validate_sort_by_field(field_name: &str, schema: &Schema) -> anyhow::Result<()> {
     if field_name == "_score" {
         return Ok(());
     }
@@ -178,30 +192,13 @@ pub(crate) fn validate_sort_by_field(field_name: &str, schema: &Schema) -> anyho
     Ok(())
 }
 
-fn validate_sort_by_score(
-    schema: &Schema,
-    search_fields_opt: Option<&Vec<Field>>,
-) -> anyhow::Result<()> {
-    if let Some(fields) = search_fields_opt {
-        for field in fields {
-            if !schema.get_field_entry(*field).has_fieldnorms() {
-                bail!(
-                    "Fieldnorms for field `{}` is missing. Fieldnorms must be stored for the \
-                     field to compute the BM25 score of the documents.",
-                    schema.get_field_name(*field)
-                )
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod test {
     use quickwit_proto::{query_string, SearchRequest};
     use tantivy::schema::{Schema, FAST, INDEXED, STORED, TEXT};
 
     use super::build_query;
+    use crate::query_builder::validate_requested_snippet_fields;
     use crate::{DYNAMIC_FIELD_NAME, SOURCE_FIELD_NAME};
 
     enum TestExpectation {
@@ -262,14 +259,8 @@ mod test {
                 &&search_fields_ref[..],
             )
             .map_err(|err| err.to_string())?,
-            search_fields,
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 20,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
+            .. Default::default()
         };
         let query_result = build_query(&request, make_schema(dynamic_mode), true);
         query_result
@@ -526,35 +517,9 @@ mod test {
     }
 
     #[track_caller]
-    fn check_snippet_fields_validation(
-        query_str: &str,
-        search_fields: Vec<String>,
-        snippet_fields: Vec<String>,
-    ) -> anyhow::Result<()> {
+    fn check_snippet_fields_validation(snippet_fields: &[String]) -> anyhow::Result<()> {
         let schema = make_schema(true);
-        let request = SearchRequest {
-            aggregation_request: None,
-            index_id: "test_index".to_string(),
-            query_ast: query_string(query_str).unwrap(),
-            search_fields,
-            snippet_fields,
-            start_timestamp: None,
-            end_timestamp: None,
-            max_hits: 20,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
-        };
-        todo!();
-        // let user_input_ast = tantivy::query_grammar::parse_query(request.query.as_ref().unwrap())
-        //     .map_err(|_| QueryParserError::SyntaxError(request.query.clone().unwrap()))
-        //     .unwrap();
-        // let default_field_names =
-        //     default_search_fields.unwrap_or_else(|| vec!["title".to_string(),
-        // "desc".to_string()]);
-
-        // validate_requested_snippet_fields(&schema, &request, &user_input_ast,
-        // &default_field_names)
+        validate_requested_snippet_fields(&schema, snippet_fields)
     }
 
     #[test]
@@ -568,66 +533,24 @@ mod test {
 
     #[test]
     fn test_validate_requested_snippet_fields() {
-        let validation_result =
-            check_snippet_fields_validation("foo", Vec::new(), vec!["desc".to_string()]);
-        assert!(validation_result.is_ok());
-        let validation_result = check_snippet_fields_validation(
-            "foo",
-            vec!["foo".to_string()],
-            vec!["desc".to_string()],
-        );
-        assert!(validation_result.is_ok());
-        let validation_result =
-            check_snippet_fields_validation("desc:foo", Vec::new(), vec!["desc".to_string()]);
-        assert!(validation_result.is_ok());
-        let validation_result = check_snippet_fields_validation(
-            "foo",
-            vec!["desc".to_string()],
-            vec!["desc".to_string()],
-        );
-        assert!(validation_result.is_ok());
-
-        // Non existing field
-        let validation_result = check_snippet_fields_validation(
-            "foo",
-            vec!["summary".to_string()],
-            vec!["summary".to_string()],
-        );
+        check_snippet_fields_validation(&["desc".to_string()]).unwrap();
+        let field_not_stored_err =
+            check_snippet_fields_validation(&["title".to_string()]).unwrap_err();
         assert_eq!(
-            validation_result.unwrap_err().to_string(),
-            "The field does not exist: 'summary'"
-        );
-        // Unknown searched field
-        let validation_result =
-            check_snippet_fields_validation("foo", Vec::new(), vec!["server.name".to_string()]);
-        assert_eq!(
-            validation_result.unwrap_err().to_string(),
-            "The snippet field `server.name` should be a default search field or appear in the \
-             query."
-        );
-        // Search field in query
-        let validation_result = check_snippet_fields_validation(
-            "server.name:foo",
-            Vec::new(),
-            vec!["server.name".to_string()],
-        );
-        assert!(validation_result.is_ok());
-        // Not stored field
-        let validation_result =
-            check_snippet_fields_validation("foo", Vec::new(), vec!["title".to_string()]);
-        assert_eq!(
-            validation_result.unwrap_err().to_string(),
+            field_not_stored_err.to_string(),
             "The snippet field `title` must be stored."
         );
-        // Non text field
-        let validation_result = check_snippet_fields_validation(
-            "foo",
-            vec!["server.running".to_string()],
-            vec!["server.running".to_string()],
-        );
+        let field_doesnotexist_err =
+            check_snippet_fields_validation(&["doesnotexist".to_string()]).unwrap_err();
         assert_eq!(
-            validation_result.unwrap_err().to_string(),
-            "The snippet field `server.running` must be of type `Str`, got `Bool`."
+            field_doesnotexist_err.to_string(),
+            "The field does not exist: 'doesnotexist'"
+        );
+        let field_is_not_text_err =
+            check_snippet_fields_validation(&["ip".to_string()]).unwrap_err();
+        assert_eq!(
+            field_is_not_text_err.to_string(),
+            "The snippet field `ip` must be of type `Str`, got `IpAddr`."
         );
     }
 
@@ -637,27 +560,15 @@ mod test {
             aggregation_request: None,
             index_id: "test_index".to_string(),
             query_ast: query_string("title: IN [hello]").unwrap(),
-            search_fields: Vec::new(),
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 20,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
+            .. Default::default()
         };
         let request_without_set = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
             query_ast: query_string("title:hello").unwrap(),
-            search_fields: Vec::new(),
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 20,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
+            .. Default::default()
         };
 
         let (_, warmup_info) = build_query(&request_with_set, make_schema(true), true)?;

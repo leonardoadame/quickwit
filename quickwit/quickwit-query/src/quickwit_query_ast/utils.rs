@@ -49,14 +49,14 @@ fn get_tokenizer_from_json_option(json_options: &JsonObjectOptions) -> Option<Te
 }
 
 fn make_term_query(term: Term) -> TantivyQueryAst {
-    TermQuery::new(term, IndexRecordOption::Basic).into()
+    TermQuery::new(term, IndexRecordOption::WithFreqs).into()
 }
 
 pub fn find_field_or_hit_dynamic<'a>(
     full_path: &'a str,
     schema: &'a Schema,
 ) -> Result<(Field, &'a FieldEntry, &'a str), InvalidQuery> {
-    let (field, path) = if let Some((field, path)) = schema.find_field(&full_path) {
+    let (field, path) = if let Some((field, path)) = schema.find_field(full_path) {
         (field, path)
     } else {
         let dynamic_field =
@@ -75,12 +75,10 @@ pub fn find_field_or_hit_dynamic<'a>(
                 full_path: full_path.to_string(),
             });
         }
-    } else {
-        if typ != Type::Json {
-            return Err(InvalidQuery::FieldDoesNotExist {
-                full_path: full_path.to_string(),
-            });
-        }
+    } else if typ != Type::Json {
+        return Err(InvalidQuery::FieldDoesNotExist {
+            full_path: full_path.to_string(),
+        });
     }
     Ok((field, field_entry, path))
 }
@@ -88,11 +86,12 @@ pub fn find_field_or_hit_dynamic<'a>(
 pub(crate) fn compute_query(
     full_path: &str,
     value: &str,
+    slop: u32,
     tokenize: bool,
     schema: &Schema,
 ) -> Result<TantivyQueryAst, InvalidQuery> {
     let (field, field_entry, path) = find_field_or_hit_dynamic(full_path, schema)?;
-    compute_query_with_field(field, field_entry, path, &value, tokenize)
+    compute_query_with_field(field, field_entry, path, value, slop, tokenize)
 }
 
 fn parse_val<T: FromStr>(value: &str, field_name: &str) -> Result<T, InvalidQuery> {
@@ -108,6 +107,7 @@ fn compute_query_with_field(
     field_entry: &FieldEntry,
     json_path: &str,
     value: &str,
+    slop: u32,
     tokenize: bool,
 ) -> Result<TantivyQueryAst, InvalidQuery> {
     let field_type = field_entry.field_type();
@@ -157,12 +157,14 @@ fn compute_query_with_field(
                     terms.push((token.position, Term::from_field_text(field, &token.text)));
                 });
                 if terms.is_empty() {
-                    return Ok(TantivyQueryAst::match_none());
+                    Ok(TantivyQueryAst::match_none())
                 } else if terms.len() == 1 {
                     let term = terms.pop().unwrap().1;
                     Ok(make_term_query(term))
                 } else {
-                    Ok(PhraseQuery::new_with_offset(terms).into())
+                    let mut phrase_query = PhraseQuery::new_with_offset(terms);
+                    phrase_query.set_slop(slop);
+                    Ok(phrase_query.into())
                 }
             } else {
                 let term = Term::from_field_text(field, value);

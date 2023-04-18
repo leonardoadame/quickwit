@@ -25,10 +25,15 @@ use crate::quickwit_query_ast::utils::compute_query;
 use crate::quickwit_query_ast::{IntoTantivyAst, QueryAst};
 use crate::InvalidQuery;
 
+fn is_zero(slop: &u32) -> bool {
+    *slop == 0u32
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PhraseQuery {
     pub field: String,
     pub phrase: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub slop: u32,
 }
 
@@ -42,8 +47,8 @@ impl IntoTantivyAst for PhraseQuery {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
-        with_validation: bool,
+        _with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
-        compute_query(&self.field, &self.phrase, true, schema)
+        compute_query(&self.field, &self.phrase, self.slop, true, schema)
     }
 }

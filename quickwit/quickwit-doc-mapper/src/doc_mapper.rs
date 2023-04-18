@@ -315,15 +315,8 @@ mod tests {
         let search_request = SearchRequest {
             index_id: "quickwit-index".to_string(),
             query_ast: query_string("json_field.toto.titi:hello").unwrap(),
-            search_fields: Vec::new(),
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
-            aggregation_request: None,
+            .. Default::default()
         };
         let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
         assert_eq!(
@@ -352,15 +345,9 @@ mod tests {
         let search_request = SearchRequest {
             index_id: "quickwit-index".to_string(),
             query_ast: query_string("text_field:hello").unwrap(),
-            search_fields: Vec::new(),
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
-            sort_order: None,
             sort_by_field: Some("text_field".to_string()),
-            aggregation_request: None,
+            .. Default::default()
         };
         let query = doc_mapper.query(schema, &search_request, true).unwrap_err();
         assert_eq!(
@@ -378,15 +365,8 @@ mod tests {
         let search_request = SearchRequest {
             index_id: "quickwit-index".to_string(),
             query_ast: query_string("toto.titi:hello").unwrap(),
-            search_fields: Vec::new(),
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
-            aggregation_request: None,
+            .. Default::default()
         };
         let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
         assert_eq!(
@@ -404,15 +384,8 @@ mod tests {
         let search_request = SearchRequest {
             index_id: "quickwit-index".to_string(),
             query_ast: quickwit_proto::query_string("toto:5").unwrap(),
-            search_fields: Vec::new(),
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
             max_hits: 10,
-            start_offset: 0,
-            sort_order: None,
-            sort_by_field: None,
-            aggregation_request: None,
+            .. Default::default()
         };
         let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
         assert_eq!(

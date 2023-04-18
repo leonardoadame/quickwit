@@ -69,7 +69,7 @@ impl ConvertableToQueryAst for RangeQuery {
                 underlying: Box::new(range_query_ast),
             })
         } else {
-            Ok(range_query_ast.into())
+            Ok(range_query_ast)
         }
     }
 }

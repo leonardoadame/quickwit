@@ -107,7 +107,7 @@ mod tests {
     use quickwit_grpc_clients::service_client_pool::ServiceClientPool;
     use quickwit_indexing::mock_split;
     use quickwit_metastore::{IndexMetadata, MockMetastore};
-    use quickwit_proto::OutputFormat;
+    use quickwit_proto::{query_string_with_default_fields, OutputFormat};
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::*;
@@ -117,7 +117,7 @@ mod tests {
     async fn test_root_search_stream_single_split() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query: "test".to_string(),
+            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
             search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
@@ -178,7 +178,7 @@ mod tests {
     async fn test_root_search_stream_single_split_partitionned() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query: "test".to_string(),
+            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
             search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
@@ -236,7 +236,7 @@ mod tests {
     async fn test_root_search_stream_single_split_with_error() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query: "test".to_string(),
+            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
             search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,
@@ -322,7 +322,8 @@ mod tests {
         assert!(root_search_stream(
             quickwit_proto::SearchStreamRequest {
                 index_id: "test-index".to_string(),
-                query: r#"invalid_field:"test""#.to_string(),
+                query_ast: query_string_with_default_fields(r#"invalid_field:"test""#, &[])
+                    .unwrap(),
                 search_fields: vec!["body".to_string()],
                 snippet_fields: Vec::new(),
                 start_timestamp: None,
@@ -341,7 +342,7 @@ mod tests {
         assert!(root_search_stream(
             quickwit_proto::SearchStreamRequest {
                 index_id: "test-index".to_string(),
-                query: "test".to_string(),
+                query_ast: query_string_with_default_fields("test", &["invalid_field"]).unwrap(),
                 search_fields: vec!["invalid_field".to_string()],
                 snippet_fields: Vec::new(),
                 start_timestamp: None,

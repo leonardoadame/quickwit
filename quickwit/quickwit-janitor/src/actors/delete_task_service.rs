@@ -235,7 +235,7 @@ mod tests {
             index_id: index_id.to_string(),
             start_timestamp: None,
             end_timestamp: None,
-            query: "*".to_string(),
+            query_ast: r#"{"type": "MatchAll"}"#.to_string(),
             search_fields: Vec::new(),
         };
         metastore.create_delete_task(delete_query).await.unwrap();

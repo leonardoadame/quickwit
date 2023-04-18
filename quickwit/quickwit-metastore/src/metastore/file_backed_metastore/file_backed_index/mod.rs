@@ -30,6 +30,7 @@ use itertools::Itertools;
 use quickwit_common::PrettySample;
 use quickwit_config::{SourceConfig, TestableForRegression};
 use quickwit_proto::metastore_api::{DeleteQuery, DeleteTask};
+use quickwit_proto::query_string_with_default_fields;
 use serde::{Deserialize, Serialize};
 use serialize::VersionedFileBackedIndex;
 use time::OffsetDateTime;
@@ -86,8 +87,8 @@ impl TestableForRegression for FileBackedIndex {
                 index_id: "index".to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query: "Harry Potter".to_string(),
-                search_fields: Vec::new(),
+                query_ast: query_string_with_default_fields("Harry Potter", &["body"]).unwrap(),
+                search_fields: vec!["body".to_string()],
             }),
         };
         FileBackedIndex::new(index_metadata, splits, vec![delete_task])
