@@ -27,7 +27,7 @@ mod range_query;
 mod tantivy_query_ast;
 mod term_query;
 mod term_set_query;
-mod utils;
+pub(crate) mod utils;
 mod visitor;
 
 pub use bool_query::BoolQuery;

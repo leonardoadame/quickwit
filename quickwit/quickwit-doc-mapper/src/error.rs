@@ -28,6 +28,11 @@ pub enum QueryParserError {
     InvalidJson(#[from] serde_json::Error),
     #[error("Invalid query: {0}")]
     InvalidQuery(#[from] InvalidQuery),
+    #[error("Invalid default search field: `{field_name}` {cause}")]
+    InvalidDefaultField {
+        cause: &'static str,
+        field_name: String,
+    },
     #[error("{0}")]
     Other(#[from] anyhow::Error),
 }

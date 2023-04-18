@@ -52,7 +52,7 @@ fn make_term_query(term: Term) -> TantivyQueryAst {
     TermQuery::new(term, IndexRecordOption::Basic).into()
 }
 
-pub(crate) fn find_field_or_hit_dynamic<'a>(
+pub fn find_field_or_hit_dynamic<'a>(
     full_path: &'a str,
     schema: &'a Schema,
 ) -> Result<(Field, &'a FieldEntry, &'a str), InvalidQuery> {

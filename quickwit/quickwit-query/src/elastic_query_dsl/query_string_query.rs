@@ -60,7 +60,7 @@ impl ConvertableToQueryAst for QueryStringQuery {
 fn convert_user_input_literal(
     user_input_literal: UserInputLiteral,
     default_search_fields: &[&str],
-) -> QueryAst {
+) -> anyhow::Result<QueryAst> {
     let UserInputLiteral {
         field_name,
         phrase,
@@ -74,6 +74,9 @@ fn convert_user_input_literal(
             .map(|field_name| field_name.to_string())
             .collect()
     };
+    if field_names.is_empty() {
+        anyhow::bail!("Query requires a default search field and none was supplied.");
+    }
     let mut phrase_queries: Vec<QueryAst> = field_names
         .into_iter()
         .map(|field_name| {
@@ -86,15 +89,15 @@ fn convert_user_input_literal(
         })
         .collect();
     if phrase_queries.is_empty() {
-        QueryAst::MatchNone
+        Ok(QueryAst::MatchNone)
     } else if phrase_queries.len() == 1 {
-        phrase_queries.pop().unwrap().into()
+        Ok(phrase_queries.pop().unwrap().into())
     } else {
-        quickwit_query_ast::BoolQuery {
+        Ok(quickwit_query_ast::BoolQuery {
             should: phrase_queries,
             ..Default::default()
         }
-        .into()
+        .into())
     }
 }
 
@@ -124,7 +127,7 @@ fn convert_user_input_ast_to_query_ast(
         }
         UserInputAst::Leaf(leaf) => match *leaf {
             UserInputLeaf::Literal(literal) => {
-                Ok(convert_user_input_literal(literal, default_search_fields))
+                convert_user_input_literal(literal, default_search_fields)
             }
             UserInputLeaf::All => Ok(QueryAst::MatchAll),
             UserInputLeaf::Range {
@@ -150,14 +153,17 @@ fn convert_user_input_ast_to_query_ast(
                 Ok(range_query.into())
             }
             UserInputLeaf::Set { field, elements } => {
-                let fields: Vec<&str> = if let Some(field) = field.as_ref() {
+                let field_names: Vec<&str> = if let Some(field) = field.as_ref() {
                     vec![field.as_str()]
                 } else {
                     default_search_fields.to_vec()
                 };
+                if field_names.is_empty() {
+                    anyhow::bail!("Set query need to target a specific field.");
+                }
                 let mut terms_per_field: HashMap<String, HashSet<String>> = Default::default();
                 let terms: HashSet<String> = elements.into_iter().collect();
-                for field in fields {
+                for field in field_names {
                     terms_per_field.insert(field.to_string(), terms.clone());
                 }
                 let term_set_query = quickwit_query_ast::TermSetQuery { terms_per_field };

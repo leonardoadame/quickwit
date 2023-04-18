@@ -364,8 +364,8 @@ mod tests {
         };
         let query = doc_mapper.query(schema, &search_request, true).unwrap_err();
         assert_eq!(
-            format!("{query:?}"),
-            "QueryParserError(Sort by field on type text is currently not supported `text_field`.)"
+            query.to_string(),
+            "Sort by field on type text is currently not supported `text_field`."
         );
     }
 

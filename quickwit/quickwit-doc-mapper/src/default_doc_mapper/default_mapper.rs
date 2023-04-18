@@ -1064,7 +1064,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             default_doc_mapper_query_aux(&doc_mapper, "body.wrong_field:hello").unwrap_err(),
-            "Field does not exist: 'body.wrong_field'"
+            "Invalid query: Field does not exist: `body.wrong_field`"
         );
     }
 

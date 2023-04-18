@@ -40,6 +40,7 @@ pub use elastic_query_dsl::ElasticQueryDsl;
 pub use error::InvalidQuery;
 pub use json_literal::JsonLiteral;
 pub(crate) use not_nan_f32::NotNaNf32;
+pub use quickwit_query_ast::utils::find_field_or_hit_dynamic;
 use serde::{Deserialize, Serialize};
 pub use tantivy::query::Query as TantivyQuery;
 pub use tokenizers::get_quickwit_tokenizer_manager;
