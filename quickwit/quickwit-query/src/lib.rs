@@ -46,11 +46,11 @@ pub use tantivy::query::Query as TantivyQuery;
 pub use tokenizers::get_quickwit_tokenizer_manager;
 
 use crate::elastic_query_dsl::{ConvertableToQueryAst, QueryStringQuery};
-use crate::quickwit_query_ast::QueryAst;
+use crate::quickwit_query_ast::{QueryAst, UserTextQuery};
 
 pub fn parse_user_query(
     user_text: &str,
-    default_search_fields: &[&str],
+    default_search_fields: &[String],
     default_operator: DefaultOperator,
 ) -> anyhow::Result<QueryAst> {
     let query_string_query = QueryStringQuery {
@@ -62,14 +62,19 @@ pub fn parse_user_query(
 }
 
 pub fn query_string(user_text: &str) -> anyhow::Result<String> {
-    query_string_with_default_fields(user_text, &[])
+    query_string_with_default_fields(user_text, None)
 }
 
 pub fn query_string_with_default_fields(
     user_text: &str,
-    default_search_fields: &[&str],
+    default_fields: Option<Vec<String>>,
 ) -> anyhow::Result<String> {
-    let query_ast = parse_user_query(user_text, default_search_fields, DefaultOperator::And)?;
+    let user_text_query = UserTextQuery {
+        user_text: user_text.to_string(),
+        default_fields,
+        default_operator: DefaultOperator::And,
+    };
+    let query_ast: QueryAst = user_text_query.into();
     Ok(serde_json::to_string(&query_ast)?)
 }
 

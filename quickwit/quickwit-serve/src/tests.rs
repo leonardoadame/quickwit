@@ -113,7 +113,7 @@ async fn test_standalone_server() {
                 index_id: "my-new-index".to_string(),
                 query_ast: query_string("body:test").unwrap(),
                 max_hits: 10,
-                .. Default::default()
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -188,7 +188,7 @@ async fn test_multi_nodes_cluster() {
         index_id: "my-new-multi-node-index".to_string(),
         query_ast: query_string("body:test").unwrap(),
         max_hits: 10,
-        .. Default::default()
+        ..Default::default()
     };
     let search_response_empty = search_client
         .root_search(search_request.clone())

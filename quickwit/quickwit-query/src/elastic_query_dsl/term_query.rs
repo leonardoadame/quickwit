@@ -57,7 +57,7 @@ impl From<TermQuery> for ElasticQueryDslInner {
 impl ConvertableToQueryAst for TermQuery {
     fn convert_to_query_ast(
         self,
-        _default_search_fields: &[&str],
+        _default_search_fields: &[String],
     ) -> anyhow::Result<crate::quickwit_query_ast::QueryAst> {
         let term_ast = quickwit_query_ast::TermQuery {
             field: self.field,

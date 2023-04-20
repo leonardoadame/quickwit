@@ -368,7 +368,12 @@ impl DocMapper for DefaultDocMapper {
         request: &SearchRequest,
         with_validation: bool,
     ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
-        build_query(request, split_schema, with_validation)
+        build_query(
+            request,
+            split_schema,
+            &self.default_search_field_names[..],
+            with_validation,
+        )
     }
 
     fn schema(&self) -> Schema {

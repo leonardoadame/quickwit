@@ -42,7 +42,7 @@ pub struct RangeQuery {
 }
 
 impl ConvertableToQueryAst for RangeQuery {
-    fn convert_to_query_ast(self, _default_search_fields: &[&str]) -> anyhow::Result<QueryAst> {
+    fn convert_to_query_ast(self, _default_search_fields: &[String]) -> anyhow::Result<QueryAst> {
         let range_query_ast = crate::quickwit_query_ast::RangeQuery {
             field: self.field,
             lower_bound: match (self.gt, self.gte) {

@@ -49,23 +49,27 @@ impl IntoTantivyAst for BoolQuery {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
         let mut boolean_query = super::tantivy_query_ast::TantivyBoolQuery::default();
         for must in &self.must {
-            let must_leaf = must.into_tantivy_ast_call(schema, with_validation)?;
+            let must_leaf = must.into_tantivy_ast_call(schema, search_fields, with_validation)?;
             boolean_query.must.push(must_leaf);
         }
         for must_not in &self.must_not {
-            let must_not_leaf = must_not.into_tantivy_ast_call(schema, with_validation)?;
+            let must_not_leaf =
+                must_not.into_tantivy_ast_call(schema, search_fields, with_validation)?;
             boolean_query.must_not.push(must_not_leaf);
         }
         for should in &self.should {
-            let should_leaf = should.into_tantivy_ast_call(schema, with_validation)?;
+            let should_leaf =
+                should.into_tantivy_ast_call(schema, search_fields, with_validation)?;
             boolean_query.should.push(should_leaf);
         }
         for filter in &self.filter {
-            let filter_leaf = filter.into_tantivy_ast_call(schema, with_validation)?;
+            let filter_leaf =
+                filter.into_tantivy_ast_call(schema, search_fields, with_validation)?;
             boolean_query.filter.push(filter_leaf);
         }
         Ok(TantivyQueryAst::Bool(boolean_query))

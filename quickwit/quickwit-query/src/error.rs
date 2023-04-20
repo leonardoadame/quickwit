@@ -45,4 +45,6 @@ pub enum InvalidQuery {
     FieldDoesNotExist { full_path: String },
     #[error("Json field root is not a valid search field: `{full_path}`")]
     JsonFieldRootNotSearchable { full_path: String },
+    #[error("User query should have been parsed")]
+    UserQueryNotParsed,
 }

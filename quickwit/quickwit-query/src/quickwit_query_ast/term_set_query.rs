@@ -52,6 +52,7 @@ impl IntoTantivyAst for TermSetQuery {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
         let terms_it = self.make_term_iterator(schema)?;

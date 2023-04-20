@@ -98,6 +98,9 @@ fn extract_unsimplified_tags_filter_ast(query_ast: QueryAst) -> UnsimplifiedTagF
             }
         }
         QueryAst::Boost { underlying, .. } => extract_unsimplified_tags_filter_ast(*underlying),
+        QueryAst::UserText(user_text_query) => {
+            todo!();
+        }
     }
 }
 

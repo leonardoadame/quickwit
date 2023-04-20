@@ -49,7 +49,7 @@ pub struct BoolQuery {
 
 fn convert_vec(
     query_dsls: Vec<ElasticQueryDslInner>,
-    default_search_fields: &[&str],
+    default_search_fields: &[String],
 ) -> anyhow::Result<Vec<QueryAst>> {
     query_dsls
         .into_iter()
@@ -58,7 +58,7 @@ fn convert_vec(
 }
 
 impl ConvertableToQueryAst for BoolQuery {
-    fn convert_to_query_ast(self, default_search_fields: &[&str]) -> anyhow::Result<QueryAst> {
+    fn convert_to_query_ast(self, default_search_fields: &[String]) -> anyhow::Result<QueryAst> {
         let bool_query_ast = quickwit_query_ast::BoolQuery {
             must: convert_vec(self.must, default_search_fields)?,
             must_not: convert_vec(self.must_not, default_search_fields)?,

@@ -134,9 +134,8 @@ pub async fn post_delete_request(
         index_id: index_id.clone(),
         start_timestamp: delete_request.start_timestamp,
         end_timestamp: delete_request.end_timestamp,
-        query_ast: query_string_with_default_fields(&delete_request.query, &[])
+        query_ast: query_string_with_default_fields(&delete_request.query, Some(Vec::new()))
             .map_err(|err| JanitorError::InvalidDeleteQuery(err.to_string()))?,
-        search_fields: delete_request.search_fields,
     };
     let index_config: IndexConfig = metastore
         .index_metadata(&delete_query.index_id)

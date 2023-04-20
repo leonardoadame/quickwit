@@ -352,11 +352,10 @@ message SearchStreamRequest {
   string index_id = 1;
 
   // Quickwit Query AST encoded in Json
-//   string query = 2 [deprecated = true];
+  // string query = 2 [deprecated = true];
   string query_ast = 11;
 
-  // Fields to search on
-  repeated string  search_fields = 3;
+  //   repeated string  search_fields = 3;
 
   // The time filter is interpreted as a semi-open interval. [start, end)
   optional int64 start_timestamp = 4;

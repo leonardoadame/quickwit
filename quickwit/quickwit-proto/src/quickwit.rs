@@ -321,12 +321,9 @@ pub struct SearchStreamRequest {
     #[prost(string, tag = "1")]
     pub index_id: ::prost::alloc::string::String,
     /// Quickwit Query AST encoded in Json
-    ///    string query = 2 [deprecated = true];
+    /// string query = 2 [deprecated = true];
     #[prost(string, tag = "11")]
     pub query_ast: ::prost::alloc::string::String,
-    /// Fields to search on
-    #[prost(string, repeated, tag = "3")]
-    pub search_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The time filter is interpreted as a semi-open interval. [start, end)
     #[prost(int64, optional, tag = "4")]
     pub start_timestamp: ::core::option::Option<i64>,

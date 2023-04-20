@@ -71,6 +71,7 @@ impl IntoTantivyAst for RangeQuery {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         _with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
         let (_field, field_entry, _path) =

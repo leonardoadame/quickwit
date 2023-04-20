@@ -87,8 +87,11 @@ impl TestableForRegression for FileBackedIndex {
                 index_id: "index".to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query_ast: query_string_with_default_fields("Harry Potter", &["body"]).unwrap(),
-                search_fields: vec!["body".to_string()],
+                query_ast: query_string_with_default_fields(
+                    "Harry Potter",
+                    Some(vec!["body".to_string()]),
+                )
+                .unwrap(),
             }),
         };
         FileBackedIndex::new(index_metadata, splits, vec![delete_task])

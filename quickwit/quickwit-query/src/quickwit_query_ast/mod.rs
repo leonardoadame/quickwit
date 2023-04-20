@@ -27,6 +27,7 @@ mod range_query;
 mod tantivy_query_ast;
 mod term_query;
 mod term_set_query;
+mod user_text_query;
 pub(crate) mod utils;
 mod visitor;
 
@@ -36,6 +37,7 @@ pub use range_query::RangeQuery;
 use tantivy_query_ast::TantivyQueryAst;
 pub use term_query::TermQuery;
 pub use term_set_query::TermSetQuery;
+pub use user_text_query::UserTextQuery;
 pub use visitor::QueryAstVisitor;
 
 use crate::{InvalidQuery, NotNaNf32};
@@ -48,6 +50,7 @@ pub enum QueryAst {
     TermSet(TermSetQuery),
     Phrase(PhraseQuery),
     Range(RangeQuery),
+    UserText(UserTextQuery),
     MatchAll,
     MatchNone,
     Boost {
@@ -64,6 +67,7 @@ trait IntoTantivyAst {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery>;
 
@@ -71,9 +75,10 @@ trait IntoTantivyAst {
     fn into_tantivy_ast_call(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
-        let tantivy_ast_res = self.into_tantivy_ast_impl(schema, with_validation);
+        let tantivy_ast_res = self.into_tantivy_ast_impl(schema, search_fields, with_validation);
         if !with_validation && tantivy_ast_res.is_err() {
             return Ok(TantivyQueryAst::match_none());
         }
@@ -85,24 +90,35 @@ impl IntoTantivyAst for QueryAst {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
         match self {
-            QueryAst::Bool(bool_query) => bool_query.into_tantivy_ast_call(schema, with_validation),
-            QueryAst::Term(term_query) => term_query.into_tantivy_ast_call(schema, with_validation),
+            QueryAst::Bool(bool_query) => {
+                bool_query.into_tantivy_ast_call(schema, search_fields, with_validation)
+            }
+            QueryAst::Term(term_query) => {
+                term_query.into_tantivy_ast_call(schema, search_fields, with_validation)
+            }
             QueryAst::Range(range_query) => {
-                range_query.into_tantivy_ast_call(schema, with_validation)
+                range_query.into_tantivy_ast_call(schema, search_fields, with_validation)
             }
             QueryAst::MatchAll => Ok(TantivyQueryAst::match_all()),
             QueryAst::MatchNone => Ok(TantivyQueryAst::match_none()),
             QueryAst::Boost { boost, underlying } => {
-                let underlying = underlying.into_tantivy_ast_call(schema, with_validation)?;
+                let underlying =
+                    underlying.into_tantivy_ast_call(schema, search_fields, with_validation)?;
                 let boost_query = BoostQuery::new(underlying.into(), (*boost).into());
                 Ok(boost_query.into())
             }
-            QueryAst::TermSet(term_set) => term_set.into_tantivy_ast_call(schema, with_validation),
+            QueryAst::TermSet(term_set) => {
+                term_set.into_tantivy_ast_call(schema, search_fields, with_validation)
+            }
             QueryAst::Phrase(phrase_query) => {
-                phrase_query.into_tantivy_ast_call(schema, with_validation)
+                phrase_query.into_tantivy_ast_call(schema, search_fields, with_validation)
+            }
+            QueryAst::UserText(user_text_query) => {
+                user_text_query.into_tantivy_ast_call(schema, search_fields, with_validation)
             }
         }
     }
@@ -112,9 +128,62 @@ impl QueryAst {
     pub fn build_tantivy_query(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         with_validation: bool,
     ) -> Result<Box<dyn crate::TantivyQuery>, InvalidQuery> {
-        let tantivy_query_ast = self.into_tantivy_ast_call(schema, with_validation)?;
+        let tantivy_query_ast =
+            self.into_tantivy_ast_call(schema, search_fields, with_validation)?;
         Ok(tantivy_query_ast.simplify().into())
+    }
+}
+
+fn parse_user_query_in_asts(
+    asts: Vec<QueryAst>,
+    default_search_fields: &[String],
+) -> anyhow::Result<Vec<QueryAst>> {
+    asts.into_iter()
+        .map(|ast| parse_user_query(ast, default_search_fields))
+        .collect::<anyhow::Result<_>>()
+}
+
+pub fn parse_user_query(
+    query_ast: QueryAst,
+    default_search_fields: &[String],
+) -> anyhow::Result<QueryAst> {
+    match query_ast {
+        QueryAst::Bool(BoolQuery {
+            must,
+            must_not,
+            should,
+            filter,
+        }) => {
+            let must = parse_user_query_in_asts(must, default_search_fields)?;
+            let must_not = parse_user_query_in_asts(must_not, default_search_fields)?;
+            let should = parse_user_query_in_asts(should, default_search_fields)?;
+            let filter = parse_user_query_in_asts(filter, default_search_fields)?;
+            Ok(BoolQuery {
+                must,
+                must_not,
+                should,
+                filter,
+            }
+            .into())
+        }
+        ast @ QueryAst::Term(_)
+        | ast @ QueryAst::TermSet(_)
+        | ast @ QueryAst::Phrase(_)
+        | ast @ QueryAst::MatchAll
+        | ast @ QueryAst::MatchNone
+        | ast @ QueryAst::Range(_) => Ok(ast),
+        QueryAst::UserText(user_text_query) => {
+            user_text_query.parse_user_query(default_search_fields)
+        }
+        QueryAst::Boost { underlying, boost } => {
+            let underlying = parse_user_query(*underlying, default_search_fields)?;
+            Ok(QueryAst::Boost {
+                underlying: Box::new(underlying),
+                boost,
+            })
+        }
     }
 }

@@ -47,6 +47,7 @@ impl IntoTantivyAst for PhraseQuery {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         _with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
         compute_query(&self.field, &self.phrase, self.slop, true, schema)

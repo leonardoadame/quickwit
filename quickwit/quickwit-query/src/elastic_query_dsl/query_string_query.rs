@@ -45,7 +45,7 @@ pub(crate) struct QueryStringQuery {
 impl ConvertableToQueryAst for QueryStringQuery {
     fn convert_to_query_ast(
         self,
-        default_search_fields: &[&str],
+        default_search_fields: &[String],
     ) -> anyhow::Result<crate::quickwit_query_ast::QueryAst> {
         let user_input_ast = tantivy::query_grammar::parse_query(&self.query)
             .map_err(|_| anyhow::anyhow!("Failed to parse query: `{}`.", &self.query))?;
@@ -59,7 +59,7 @@ impl ConvertableToQueryAst for QueryStringQuery {
 
 fn convert_user_input_literal(
     user_input_literal: UserInputLiteral,
-    default_search_fields: &[&str],
+    default_search_fields: &[String],
 ) -> anyhow::Result<QueryAst> {
     let UserInputLiteral {
         field_name,
@@ -104,7 +104,7 @@ fn convert_user_input_literal(
 fn convert_user_input_ast_to_query_ast(
     user_input_ast: UserInputAst,
     default_occur: Occur,
-    default_search_fields: &[&str],
+    default_search_fields: &[String],
 ) -> anyhow::Result<QueryAst> {
     match user_input_ast {
         UserInputAst::Clause(clause) => {
@@ -153,8 +153,8 @@ fn convert_user_input_ast_to_query_ast(
                 Ok(range_query.into())
             }
             UserInputLeaf::Set { field, elements } => {
-                let field_names: Vec<&str> = if let Some(field) = field.as_ref() {
-                    vec![field.as_str()]
+                let field_names: Vec<String> = if let Some(field) = field.as_ref() {
+                    vec![field.to_string()]
                 } else {
                     default_search_fields.to_vec()
                 };

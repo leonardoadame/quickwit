@@ -187,8 +187,7 @@ async fn search_endpoint(
 ) -> Result<SearchResponseRest, SearchError> {
     let (sort_order, sort_by_field) = get_proto_search_by(&search_request);
     let search_fields = search_request.search_fields.unwrap_or_default();
-    let search_fields_ref: Vec<&str> = search_fields.iter().map(String::as_str).collect();
-    let query_ast = query_string_with_default_fields(&search_request.query, &search_fields_ref)
+    let query_ast = query_string_with_default_fields(&search_request.query, Some(search_fields))
         .map_err(|_| SearchError::InvalidQuery(search_request.query.to_string()))?;
     let search_request = quickwit_proto::SearchRequest {
         index_id,
@@ -342,19 +341,13 @@ async fn search_stream_endpoint(
     search_request: SearchStreamRequestQueryString,
     search_service: &dyn SearchService,
 ) -> Result<hyper::Body, SearchError> {
-    let search_fields = search_request.search_fields.unwrap_or_default();
-    let default_search_fields_ref: Vec<&str> = search_fields
-        .iter()
-        .map(|field_name| field_name.as_str())
-        .collect();
     let request = quickwit_proto::SearchStreamRequest {
         index_id,
         query_ast: query_string_with_default_fields(
             &search_request.query,
-            &default_search_fields_ref[..],
+            search_request.search_fields,
         )
         .map_err(|err| SearchError::InvalidQuery(err.to_string()))?,
-        search_fields,
         snippet_fields: search_request.snippet_fields.unwrap_or_default(),
         start_timestamp: search_request.start_timestamp,
         end_timestamp: search_request.end_timestamp,

@@ -103,6 +103,7 @@ fn validate_requested_snippet_fields(
 pub(crate) fn build_query(
     request: &SearchRequest,
     schema: Schema,
+    search_fields: &[String],
     with_validation: bool,
 ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
     let query_ast: QueryAst = serde_json::from_str(&request.query_ast)?;
@@ -116,7 +117,7 @@ pub(crate) fn build_query(
         validate_sort_by_field(sort_by_field, &schema)?;
     }
 
-    let query = query_ast.build_tantivy_query(&schema, with_validation)?;
+    let query = query_ast.build_tantivy_query(&schema, search_fields, with_validation)?;
 
     let term_set_query_fields = extract_term_set_query_fields(&query_ast);
 
@@ -250,19 +251,19 @@ mod test {
         search_fields: Vec<String>,
         dynamic_mode: bool,
     ) -> Result<String, String> {
-        let search_fields_ref: Vec<&str> = search_fields.iter().map(String::as_str).collect();
         let request = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
             query_ast: quickwit_proto::query_string_with_default_fields(
                 user_query,
-                &&search_fields_ref[..],
+                &search_fields[..],
             )
             .map_err(|err| err.to_string())?,
             max_hits: 20,
-            .. Default::default()
+            ..Default::default()
         };
-        let query_result = build_query(&request, make_schema(dynamic_mode), true);
+        let schema = make_schema(dynamic_mode);
+        let query_result = build_query(&request, schema, &search_fields[..], true);
         query_result
             .map(|query| format!("{:?}", query))
             .map_err(|err| err.to_string())
@@ -561,14 +562,14 @@ mod test {
             index_id: "test_index".to_string(),
             query_ast: query_string("title: IN [hello]").unwrap(),
             max_hits: 20,
-            .. Default::default()
+            ..Default::default()
         };
         let request_without_set = SearchRequest {
             aggregation_request: None,
             index_id: "test_index".to_string(),
             query_ast: query_string("title:hello").unwrap(),
             max_hits: 20,
-            .. Default::default()
+            ..Default::default()
         };
 
         let (_, warmup_info) = build_query(&request_with_set, make_schema(true), true)?;

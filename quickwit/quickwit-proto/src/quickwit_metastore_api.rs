@@ -188,11 +188,11 @@ pub struct DeleteQuery {
     /// Query text. The query language is that of tantivy.
     ///    string query = 4;
     /// Query AST serialized in JSON
+    ///
+    /// Search fields.
+    ///    repeated string search_fields = 5;
     #[prost(string, tag = "6")]
     pub query_ast: ::prost::alloc::string::String,
-    /// Search fields.
-    #[prost(string, repeated, tag = "5")]
-    pub search_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Serialize, Deserialize, utoipa::ToSchema)]
 #[allow(clippy::derive_partial_eq_without_eq)]

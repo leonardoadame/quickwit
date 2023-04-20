@@ -18,6 +18,7 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use crate::not_nan_f32::NotNaNf32;
+use crate::quickwit_query_ast::user_text_query::UserTextQuery;
 use crate::quickwit_query_ast::{
     BoolQuery, PhraseQuery, QueryAst, RangeQuery, TermQuery, TermSetQuery,
 };
@@ -35,6 +36,7 @@ pub trait QueryAstVisitor<'a> {
             QueryAst::MatchAll => self.visit_match_all(),
             QueryAst::MatchNone => self.visit_match_none(),
             QueryAst::Boost { underlying, boost } => self.visit_boost(&*underlying, *boost),
+            QueryAst::UserText(user_text_query) => self.visit_user_text(user_text_query),
         }
     }
 
@@ -80,6 +82,10 @@ pub trait QueryAstVisitor<'a> {
     }
 
     fn visit_range(&mut self, _range_query: &'a RangeQuery) -> Result<(), Self::Err> {
+        Ok(())
+    }
+
+    fn visit_user_text(&mut self, _user_text_query: &'a UserTextQuery) -> Result<(), Self::Err> {
         Ok(())
     }
 }

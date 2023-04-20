@@ -52,6 +52,7 @@ impl IntoTantivyAst for TermQuery {
     fn into_tantivy_ast_impl(
         &self,
         schema: &Schema,
+        search_fields: &[String],
         _with_validation: bool,
     ) -> Result<TantivyQueryAst, InvalidQuery> {
         crate::quickwit_query_ast::utils::compute_query(&self.field, &self.value, 0, false, schema)

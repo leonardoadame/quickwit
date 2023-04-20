@@ -56,17 +56,20 @@ enum ElasticQueryDslInner {
 pub struct ElasticQueryDsl(ElasticQueryDslInner);
 
 impl ElasticQueryDsl {
-    pub fn convert_to_query_ast(self, default_search_fields: &[&str]) -> anyhow::Result<QueryAst> {
+    pub fn convert_to_query_ast(
+        self,
+        default_search_fields: &[String],
+    ) -> anyhow::Result<QueryAst> {
         self.0.convert_to_query_ast(default_search_fields)
     }
 }
 
 pub(crate) trait ConvertableToQueryAst {
-    fn convert_to_query_ast(self, default_search_fields: &[&str]) -> anyhow::Result<QueryAst>;
+    fn convert_to_query_ast(self, default_search_fields: &[String]) -> anyhow::Result<QueryAst>;
 }
 
 impl ConvertableToQueryAst for ElasticQueryDslInner {
-    fn convert_to_query_ast(self, default_search_fields: &[&str]) -> anyhow::Result<QueryAst> {
+    fn convert_to_query_ast(self, default_search_fields: &[String]) -> anyhow::Result<QueryAst> {
         match self {
             Self::QueryString(query_string_query) => {
                 query_string_query.convert_to_query_ast(default_search_fields)

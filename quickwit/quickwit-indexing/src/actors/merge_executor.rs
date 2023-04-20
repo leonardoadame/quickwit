@@ -469,7 +469,7 @@ impl MergeExecutor {
                     query_ast: delete_query.query_ast,
                     start_timestamp: delete_query.start_timestamp,
                     end_timestamp: delete_query.end_timestamp,
-                    .. Default::default()
+                    ..Default::default()
                 };
                 debug!(
                     "Delete all documents matched by query `{:?}`",

@@ -190,7 +190,7 @@ message DeleteQuery {
   // Query AST serialized in JSON
   string query_ast = 6;
   // Search fields.
-  repeated string search_fields = 5;
+  //   repeated string search_fields = 5;
 }
 
 message UpdateSplitsDeleteOpstampRequest {

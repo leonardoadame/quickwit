@@ -316,7 +316,7 @@ mod tests {
             index_id: "quickwit-index".to_string(),
             query_ast: query_string("json_field.toto.titi:hello").unwrap(),
             max_hits: 10,
-            .. Default::default()
+            ..Default::default()
         };
         let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
         assert_eq!(
@@ -347,7 +347,7 @@ mod tests {
             query_ast: query_string("text_field:hello").unwrap(),
             max_hits: 10,
             sort_by_field: Some("text_field".to_string()),
-            .. Default::default()
+            ..Default::default()
         };
         let query = doc_mapper.query(schema, &search_request, true).unwrap_err();
         assert_eq!(
@@ -366,7 +366,7 @@ mod tests {
             index_id: "quickwit-index".to_string(),
             query_ast: query_string("toto.titi:hello").unwrap(),
             max_hits: 10,
-            .. Default::default()
+            ..Default::default()
         };
         let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
         assert_eq!(
@@ -385,7 +385,7 @@ mod tests {
             index_id: "quickwit-index".to_string(),
             query_ast: quickwit_proto::query_string("toto:5").unwrap(),
             max_hits: 10,
-            .. Default::default()
+            ..Default::default()
         };
         let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
         assert_eq!(
