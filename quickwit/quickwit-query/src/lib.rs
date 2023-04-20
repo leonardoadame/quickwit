@@ -61,21 +61,24 @@ pub fn parse_user_query(
     query_string_query.convert_to_query_ast(default_search_fields)
 }
 
-pub fn query_string(user_text: &str) -> anyhow::Result<String> {
-    query_string_with_default_fields(user_text, None)
+pub fn query_string_with_default_fields_json(
+    user_text: &str,
+    default_fields: Option<Vec<String>>,
+) -> String {
+    let ast: QueryAst = query_string_with_default_fields(user_text, default_fields);
+    serde_json::to_string(&ast).unwrap()
 }
 
 pub fn query_string_with_default_fields(
     user_text: &str,
     default_fields: Option<Vec<String>>,
-) -> anyhow::Result<String> {
-    let user_text_query = UserTextQuery {
+) -> QueryAst {
+    UserTextQuery {
         user_text: user_text.to_string(),
         default_fields,
         default_operator: DefaultOperator::And,
-    };
-    let query_ast: QueryAst = user_text_query.into();
-    Ok(serde_json::to_string(&query_ast)?)
+    }
+    .into()
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, Eq, PartialEq)]

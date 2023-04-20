@@ -31,6 +31,7 @@ use quickwit_proto::{
     LeafListTermsResponse, LeafSearchResponse, ListTermsRequest, SearchRequest,
     SplitIdAndFooterOffsets, SplitSearchError,
 };
+use quickwit_query::quickwit_query_ast::QueryAst;
 use quickwit_storage::{
     wrap_storage_with_long_term_cache, BundleStorage, MemorySizedCache, OwnedBytes, Storage,
 };
@@ -328,7 +329,9 @@ async fn leaf_search_single_split(
         search_request,
         agg_limits,
     )?;
-    let (query, mut warmup_info) = doc_mapper.query(split_schema, search_request, false)?;
+    let query_ast: QueryAst = serde_json::from_str(search_request.query_ast.as_str())
+        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?;
+    let (query, mut warmup_info) = doc_mapper.query(split_schema, &query_ast, false)?;
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)

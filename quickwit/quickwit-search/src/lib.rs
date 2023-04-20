@@ -168,7 +168,7 @@ fn convert_document_to_json_string(
 /// Performs a search on the current node.
 /// See also `[distributed_search]`.
 pub async fn single_node_search(
-    search_request: &SearchRequest,
+    mut search_request: SearchRequest,
     metastore: &dyn Metastore,
     storage_resolver: StorageUriResolver,
 ) -> crate::Result<SearchResponse> {
@@ -178,28 +178,29 @@ pub async fn single_node_search(
         .await?
         .into_index_config();
 
-    // This should never happen.
-    //
-    // The IndexConfig object has an option because it is used both
-    // as the index config the user supplies. After validation however,
-    // it should contain an `index_uri`.
-    //
-    // TODO see if it can be improved.
-    let index_storage = storage_resolver.resolve(&index_config.index_uri)?;
-    let metas = list_relevant_splits(search_request, metastore).await?;
-    let split_metadata: Vec<SplitIdAndFooterOffsets> =
-        metas.iter().map(extract_split_and_footer_offsets).collect();
     let doc_mapper = build_doc_mapper(&index_config.doc_mapping, &index_config.search_settings)
         .map_err(|err| {
             SearchError::InternalError(format!("Failed to build doc mapper. Cause: {err}"))
         })?;
 
-    validate_request(&*doc_mapper, search_request)?;
+    let query_ast: QueryAst = serde_json::from_str(&search_request.query_ast)?;
+    let query_ast_resolved: QueryAst = query_ast.parse_user_query(doc_mapper.default_search_fields())?;
+    search_request.query_ast = serde_json::to_string(&query_ast_resolved)?;
+
+    let index_storage = storage_resolver.resolve(&index_config.index_uri)?;
+    let metas = list_relevant_splits(&search_request, metastore).await?;
+    let split_metadata: Vec<SplitIdAndFooterOffsets> =
+        metas.iter().map(extract_split_and_footer_offsets).collect();
+    validate_request(&*doc_mapper, &search_request)?;
+
+    // Verifying that the query is valid.
+    doc_mapper.query(doc_mapper.schema(), &query_ast_resolved, true)
+        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?;
 
     let searcher_context = Arc::new(SearcherContext::new(SearcherConfig::default()));
     let leaf_search_response = leaf_search(
         searcher_context.clone(),
-        search_request,
+        &search_request,
         index_storage.clone(),
         &split_metadata[..],
         doc_mapper.clone(),
@@ -208,7 +209,7 @@ pub async fn single_node_search(
     .context("Failed to perform leaf search.")?;
 
     let search_request_opt = if !search_request.snippet_fields.is_empty() {
-        Some(search_request)
+        Some(&search_request)
     } else {
         None
     };

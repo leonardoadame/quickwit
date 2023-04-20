@@ -232,7 +232,7 @@ mod tests {
 
     use quickwit_grpc_clients::service_client_pool::ServiceClientPool;
     use quickwit_proto::{
-        query_string_with_default_fields, PartialHit, SearchRequest, SearchStreamRequest,
+        query_string_with_default_fields_json, PartialHit, SearchRequest, SearchStreamRequest,
         SplitIdAndFooterOffsets, SplitSearchError,
     };
 
@@ -266,8 +266,10 @@ mod tests {
     fn mock_leaf_search_request() -> LeafSearchRequest {
         let search_request = SearchRequest {
             index_id: "test-idx".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -293,8 +295,10 @@ mod tests {
     fn mock_leaf_search_stream_request() -> LeafSearchStreamRequest {
         let search_request = SearchStreamRequest {
             index_id: "test-idx".to_string(),
-            query_ast: query_string_with_default_fields("text", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "text",
+                Some(vec!["body".to_string()]),
+            ),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: None,

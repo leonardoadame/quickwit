@@ -133,8 +133,8 @@ fn extract_term_set_query_fields(query_ast: &QueryAst) -> HashSet<String> {
 
 #[cfg(test)]
 mod test {
-    use quickwit_proto::{query_string, SearchRequest};
-    use quickwit_query::quickwit_query_ast::QueryAst;
+    use quickwit_proto::{query_string_with_default_fields_json, SearchRequest};
+    use quickwit_query::query_string_with_default_fields;
     use tantivy::schema::{Schema, FAST, INDEXED, STORED, TEXT};
 
     use super::build_query;
@@ -189,20 +189,12 @@ mod test {
         search_fields: Vec<String>,
         dynamic_mode: bool,
     ) -> Result<String, String> {
-        let request = SearchRequest {
-            aggregation_request: None,
-            index_id: "test_index".to_string(),
-            query_ast: quickwit_proto::query_string_with_default_fields(
-                user_query,
-                Some(search_fields.clone()),
-            )
-            .map_err(|err| err.to_string())?,
-            max_hits: 20,
-            ..Default::default()
-        };
+        let query_ast = quickwit_query::query_string_with_default_fields(
+            user_query,
+            Some(search_fields.clone()),
+        ).parse_user_query(&[])
+        .map_err(|err| err.to_string())?;
         let schema = make_schema(dynamic_mode);
-        let query_ast: QueryAst =
-            serde_json::from_str(&request.query_ast).map_err(|err| err.to_string())?;
         let query_result = build_query(&query_ast, schema, &[], true);
         query_result
             .map(|query| format!("{:?}", query))
@@ -467,34 +459,21 @@ mod test {
     }
 
     #[test]
-    fn test_build_query_warmup_info() -> anyhow::Result<()> {
-        let request_with_set = SearchRequest {
-            aggregation_request: None,
-            index_id: "test_index".to_string(),
-            query_ast: query_string("title: IN [hello]").unwrap(),
-            max_hits: 20,
-            ..Default::default()
-        };
-        let request_without_set = SearchRequest {
-            aggregation_request: None,
-            index_id: "test_index".to_string(),
-            query_ast: query_string("title:hello").unwrap(),
-            max_hits: 20,
-            ..Default::default()
-        };
+    fn test_build_query_warmup_info() {
+        let query_with_set = query_string_with_default_fields("title: IN [hello]", None)
+            .parse_user_query(&[]).unwrap();
+        let query_without_set = query_string_with_default_fields("title:hello", None)
+            .parse_user_query(&[]).unwrap();
 
-        let query_ast = serde_json::from_str(&request_without_set.query_ast).unwrap();
-
-        let (_, warmup_info) = build_query(&query_ast, make_schema(true), &[], true)?;
+        let (_, warmup_info) = build_query(&query_with_set, make_schema(true), &[], true).unwrap();
         assert_eq!(warmup_info.term_dict_field_names.len(), 1);
         assert_eq!(warmup_info.posting_field_names.len(), 1);
         assert!(warmup_info.term_dict_field_names.contains("title"));
         assert!(warmup_info.posting_field_names.contains("title"));
 
-        let (_, warmup_info) = build_query(&query_ast, make_schema(true), &[], true)?;
+        let (_, warmup_info) =
+            build_query(&query_without_set, make_schema(true), &[], true).unwrap();
         assert!(warmup_info.term_dict_field_names.is_empty());
         assert!(warmup_info.posting_field_names.is_empty());
-
-        Ok(())
     }
 }

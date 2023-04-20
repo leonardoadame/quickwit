@@ -36,7 +36,7 @@ mod tests {
     use quickwit_indexing::mock_split;
     use quickwit_metastore::{IndexMetadata, MockMetastore};
     use quickwit_proto::search_service_server::SearchServiceServer;
-    use quickwit_proto::{query_string_with_default_fields, tonic, OutputFormat};
+    use quickwit_proto::{query_string_with_default_fields_json, tonic, OutputFormat};
     use quickwit_search::{
         root_search_stream, ClusterClient, MockSearchService, SearchError, SearchJobPlacer,
         SearchService,
@@ -66,7 +66,7 @@ mod tests {
         // This test aims at checking the client gRPC implementation.
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
+            query_ast: query_string_with_default_fields_json("test", &["body"]).unwrap(),
             search_fields: vec!["body".to_string()],
             snippet_fields: Vec::new(),
             start_timestamp: None,

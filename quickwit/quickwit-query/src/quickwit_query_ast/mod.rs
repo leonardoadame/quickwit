@@ -59,6 +59,50 @@ pub enum QueryAst {
     },
 }
 
+impl QueryAst {
+    pub fn parse_user_query(
+        self: QueryAst,
+        default_search_fields: &[String],
+    ) -> anyhow::Result<QueryAst> {
+        match self {
+            QueryAst::Bool(BoolQuery {
+                must,
+                must_not,
+                should,
+                filter,
+            }) => {
+                let must = parse_user_query_in_asts(must, default_search_fields)?;
+                let must_not = parse_user_query_in_asts(must_not, default_search_fields)?;
+                let should = parse_user_query_in_asts(should, default_search_fields)?;
+                let filter = parse_user_query_in_asts(filter, default_search_fields)?;
+                Ok(BoolQuery {
+                    must,
+                    must_not,
+                    should,
+                    filter,
+                }
+                .into())
+            }
+            ast @ QueryAst::Term(_)
+            | ast @ QueryAst::TermSet(_)
+            | ast @ QueryAst::Phrase(_)
+            | ast @ QueryAst::MatchAll
+            | ast @ QueryAst::MatchNone
+            | ast @ QueryAst::Range(_) => Ok(ast),
+            QueryAst::UserText(user_text_query) => {
+                user_text_query.parse_user_query(default_search_fields)
+            }
+            QueryAst::Boost { underlying, boost } => {
+                let underlying = underlying.parse_user_query(default_search_fields)?;
+                Ok(QueryAst::Boost {
+                    underlying: Box::new(underlying),
+                    boost,
+                })
+            }
+        }
+    }
+}
+
 trait IntoTantivyAst {
     /// Transforms a query Ast node into a TantivyQueryAst.
     ///
@@ -142,48 +186,6 @@ fn parse_user_query_in_asts(
     default_search_fields: &[String],
 ) -> anyhow::Result<Vec<QueryAst>> {
     asts.into_iter()
-        .map(|ast| parse_user_query(ast, default_search_fields))
+        .map(|ast| ast.parse_user_query(default_search_fields))
         .collect::<anyhow::Result<_>>()
-}
-
-pub fn parse_user_query(
-    query_ast: QueryAst,
-    default_search_fields: &[String],
-) -> anyhow::Result<QueryAst> {
-    match query_ast {
-        QueryAst::Bool(BoolQuery {
-            must,
-            must_not,
-            should,
-            filter,
-        }) => {
-            let must = parse_user_query_in_asts(must, default_search_fields)?;
-            let must_not = parse_user_query_in_asts(must_not, default_search_fields)?;
-            let should = parse_user_query_in_asts(should, default_search_fields)?;
-            let filter = parse_user_query_in_asts(filter, default_search_fields)?;
-            Ok(BoolQuery {
-                must,
-                must_not,
-                should,
-                filter,
-            }
-            .into())
-        }
-        ast @ QueryAst::Term(_)
-        | ast @ QueryAst::TermSet(_)
-        | ast @ QueryAst::Phrase(_)
-        | ast @ QueryAst::MatchAll
-        | ast @ QueryAst::MatchNone
-        | ast @ QueryAst::Range(_) => Ok(ast),
-        QueryAst::UserText(user_text_query) => {
-            user_text_query.parse_user_query(default_search_fields)
-        }
-        QueryAst::Boost { underlying, boost } => {
-            let underlying = parse_user_query(*underlying, default_search_fields)?;
-            Ok(QueryAst::Boost {
-                underlying: Box::new(underlying),
-                boost,
-            })
-        }
-    }
 }

@@ -2,18 +2,18 @@ Quickwit
 
 ```mermaid
 flowchart LR
-    EsApiQParam[ES search q= param] -->|parse user query| QueryAST
-    QuickwitAPI -->|parse user query| QueryAST
+    EsApiQParam[ES q= query string param] -->|parse user query| QueryAST
     EsQueryDSL[ES query DSL in json body] -->|Parse json| QueryAST
-    QueryAST --> TantivyQuery
+    QuickwitAPI -->|parse user query| QueryAST
+    QueryAST -->|apply query to a split| TantivyQuery
 
 ```
 
+In quickwit and in tantivy, we call XXXQuery every object that represent a predicate over a document, hence selecting a subset of documents.
 
-In quickwit and in tantivy, we call Query every object that represent a predicate over a document, hence selecting a subset of documents.
-It does not contain information about what to do with the document, for instance how to sort them, which aggregation to run on them etc.
+Such object do not contain information about what to do with the document, for instance how to sort them, which aggregation to run on them etc.
 
-The SearchRequest is the larger object in charge of gathering all of the information of the request, included the user query.
+The SearchRequest on the other hand is the larger object in charge of gathering all of the information of the request, included the user query.
 
 Quickwit uses a `QueryAST` object to represent queries internally.
 Regardless of how the query has been supplied, the

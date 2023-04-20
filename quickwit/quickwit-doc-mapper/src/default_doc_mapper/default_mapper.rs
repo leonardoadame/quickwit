@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
 use anyhow::{bail, Context};
-use quickwit_proto::SearchRequest;
+use quickwit_query::quickwit_query_ast::QueryAst;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value as JsonValue};
 use tantivy::query::Query;
@@ -365,16 +365,19 @@ impl DocMapper for DefaultDocMapper {
     fn query(
         &self,
         split_schema: Schema,
-        request: &SearchRequest,
+        query_ast: &QueryAst,
         with_validation: bool,
     ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
-        let query_ast = serde_json::from_str(&request.query_ast).unwrap();
         build_query(
-            &query_ast,
+            query_ast,
             split_schema,
             &self.default_search_field_names[..],
             with_validation,
         )
+    }
+
+    fn default_search_fields(&self) -> &[String] {
+        &self.default_search_field_names
     }
 
     fn schema(&self) -> Schema {
@@ -398,7 +401,7 @@ impl DocMapper for DefaultDocMapper {
 mod tests {
     use std::collections::HashMap;
 
-    use quickwit_proto::{query_string, SearchRequest};
+    use quickwit_query::query_string_with_default_fields;
     use serde_json::{self, json, Value as JsonValue};
     use tantivy::schema::{FieldType, Type, Value as TantivyValue};
 
@@ -1049,12 +1052,11 @@ mod tests {
         doc_mapper: &dyn DocMapper,
         query: &str,
     ) -> Result<String, String> {
-        let search_request = SearchRequest {
-            query_ast: query_string(query).unwrap(),
-            ..Default::default()
-        };
+        let query_ast = query_string_with_default_fields(query, None)
+            .parse_user_query(doc_mapper.default_search_fields())
+            .map_err(|err| err.to_string())?;
         let (query, _) = doc_mapper
-            .query(doc_mapper.schema(), &search_request, true)
+            .query(doc_mapper.schema(), &query_ast, true)
             .map_err(|err| err.to_string())?;
         Ok(format!("{query:?}"))
     }

@@ -648,7 +648,7 @@ mod tests {
     use futures::executor::block_on;
     use quickwit_config::IndexConfig;
     use quickwit_proto::metastore_api::DeleteQuery;
-    use quickwit_proto::query_string_with_default_fields;
+    use quickwit_proto::query_string_with_default_fields_json;
     use quickwit_storage::{MockStorage, RamStorage, Storage, StorageErrorKind};
     use rand::Rng;
     use time::OffsetDateTime;
@@ -1336,8 +1336,7 @@ mod tests {
             start_timestamp: None,
             end_timestamp: None,
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("harry potter", &["body"]).unwrap(),
-            search_fields: Vec::new(),
+            query_ast: query_string_with_default_fields_json("harry potter", Some(vec!["body".to_string()])),
         };
 
         let delete_task_1 = metastore
@@ -1372,9 +1371,10 @@ mod tests {
             start_timestamp: None,
             end_timestamp: None,
             index_id: index_id_2.to_string(),
-            query_ast: quickwit_proto::query_string_with_default_fields("harry potter", &["body"])
-                .unwrap(),
-            search_fields: Vec::new(),
+            query_ast: quickwit_proto::query_string_with_default_fields_json(
+                "harry potter",
+                Some(vec!["body".to_string()]),
+            ),
         };
         let delete_task_4 = metastore
             .create_delete_task(delete_query.clone())

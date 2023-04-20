@@ -31,7 +31,7 @@ pub mod test_suite {
     use quickwit_config::{IndexConfig, SourceConfig, SourceParams};
     use quickwit_doc_mapper::tag_pruning::{no_tag, tag, TagFilterAst};
     use quickwit_proto::metastore_api::DeleteQuery;
-    use quickwit_proto::{query_string, query_string_with_default_fields};
+    use quickwit_proto::{query_string_with_default_fields_json};
     use time::OffsetDateTime;
     use tokio::time::sleep;
     use tracing::{error, info};
@@ -2008,10 +2008,9 @@ pub mod test_suite {
         let index_config = IndexConfig::for_test(&index_id, &index_uri);
         let delete_query = DeleteQuery {
             index_id: index_id.clone(),
-            query_ast: query_string_with_default_fields("my_field:my_value", &[]).unwrap(),
+            query_ast: query_string_with_default_fields_json("my_field:my_value", None),
             start_timestamp: Some(1),
             end_timestamp: Some(2),
-            search_fields: Vec::new(),
         };
         metastore.create_index(index_config.clone()).await.unwrap();
 
@@ -2041,20 +2040,18 @@ pub mod test_suite {
         let index_config_1 = IndexConfig::for_test(&index_id_1, &index_uri_1);
         let delete_query_index_1 = DeleteQuery {
             index_id: index_id_1.to_string(),
-            query_ast: query_string_with_default_fields("my_field:my_value", &[]).unwrap(),
+            query_ast: query_string_with_default_fields_json("my_field:my_value", None),
             start_timestamp: Some(1),
             end_timestamp: Some(2),
-            search_fields: Vec::new(),
         };
         let index_id_2 = append_random_suffix("test-last-delete-opstamp-2");
         let index_uri_2 = format!("ram:///indexes/{index_id_2}");
         let index_config_2 = IndexConfig::for_test(&index_id_2, &index_uri_2);
         let delete_query_index_2 = DeleteQuery {
             index_id: index_id_2.to_string(),
-            query_ast: query_string_with_default_fields("my_field:my_value", &[]).unwrap(),
+            query_ast: query_string_with_default_fields_json("my_field:my_value", None),
             start_timestamp: Some(1),
             end_timestamp: Some(2),
-            search_fields: Vec::new(),
         };
         metastore
             .create_index(index_config_1.clone())
@@ -2100,10 +2097,9 @@ pub mod test_suite {
         let index_config = IndexConfig::for_test(&index_id, &index_uri);
         let delete_query = DeleteQuery {
             index_id: index_id.clone(),
-            query_ast: query_string("my_field:my_value").unwrap(),
+            query_ast: query_string_with_default_fields_json("my_field:my_value", None),
             start_timestamp: Some(1),
             end_timestamp: Some(2),
-            search_fields: Vec::new(),
         };
         metastore.create_index(index_config.clone()).await.unwrap();
         let _ = metastore
@@ -2125,20 +2121,18 @@ pub mod test_suite {
         let index_config_1 = IndexConfig::for_test(&index_id_1, &index_uri_1);
         let delete_query_index_1 = DeleteQuery {
             index_id: index_id_1.to_string(),
-            query_ast: query_string("my_field:my_value").unwrap(),
+            query_ast: query_string_with_default_fields_json("my_field:my_value", None),
             start_timestamp: Some(1),
             end_timestamp: Some(2),
-            search_fields: Vec::new(),
         };
         let index_id_2 = append_random_suffix("test-list-delete-tasks-2");
         let index_uri_2 = format!("ram:///indexes/{index_id_2}");
         let index_config_2 = IndexConfig::for_test(&index_id_2, &index_uri_2);
         let delete_query_index_2 = DeleteQuery {
             index_id: index_id_2.to_string(),
-            query_ast: query_string("my_field:my_value").unwrap(),
+            query_ast: query_string_with_default_fields_json("my_field:my_value", None),
             start_timestamp: Some(1),
             end_timestamp: Some(2),
-            search_fields: Vec::new(),
         };
         metastore
             .create_index(index_config_1.clone())

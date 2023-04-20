@@ -23,7 +23,9 @@ use std::sync::Arc;
 use futures::stream::StreamExt;
 use hyper::header::HeaderValue;
 use hyper::HeaderMap;
-use quickwit_proto::{query_string_with_default_fields, OutputFormat, ServiceError, SortOrder};
+use quickwit_proto::{
+    query_string_with_default_fields_json, OutputFormat, ServiceError, SortOrder,
+};
 use quickwit_search::{SearchError, SearchResponseRest, SearchService};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as JsonValue;
@@ -187,8 +189,8 @@ async fn search_endpoint(
 ) -> Result<SearchResponseRest, SearchError> {
     let (sort_order, sort_by_field) = get_proto_search_by(&search_request);
     let search_fields = search_request.search_fields.unwrap_or_default();
-    let query_ast = query_string_with_default_fields(&search_request.query, Some(search_fields))
-        .map_err(|_| SearchError::InvalidQuery(search_request.query.to_string()))?;
+    let query_ast =
+        query_string_with_default_fields_json(&search_request.query, Some(search_fields));
     let search_request = quickwit_proto::SearchRequest {
         index_id,
         query_ast,
@@ -343,11 +345,10 @@ async fn search_stream_endpoint(
 ) -> Result<hyper::Body, SearchError> {
     let request = quickwit_proto::SearchStreamRequest {
         index_id,
-        query_ast: query_string_with_default_fields(
+        query_ast: query_string_with_default_fields_json(
             &search_request.query,
             search_request.search_fields,
-        )
-        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?,
+        ),
         snippet_fields: search_request.snippet_fields.unwrap_or_default(),
         start_timestamp: search_request.start_timestamp,
         end_timestamp: search_request.end_timestamp,

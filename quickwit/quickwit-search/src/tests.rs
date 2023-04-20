@@ -25,8 +25,10 @@ use quickwit_doc_mapper::DefaultDocMapper;
 use quickwit_indexing::TestSandbox;
 use quickwit_opentelemetry::otlp::TraceId;
 use quickwit_proto::{
-    query_string, query_string_with_default_fields, LeafListTermsResponse, SearchRequest, SortOrder,
+    query_string_with_default_fields_json, LeafListTermsResponse, SearchRequest,
+    SortOrder,
 };
+use quickwit_query::query_string_with_default_fields;
 use serde_json::{json, Value as JsonValue};
 use tantivy::schema::Value as TantivyValue;
 use tantivy::time::OffsetDateTime;
@@ -58,16 +60,15 @@ async fn test_single_node_simple() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields(
+        query_ast: query_string_with_default_fields_json(
             "anthropomorphic",
             Some(vec!["body".to_string()]),
-        )
-        .unwrap(),
+        ),
         max_hits: 2,
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -105,7 +106,7 @@ async fn test_single_node_termset() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("title: IN [beagle]").unwrap(),
+        query_ast: query_string_with_default_fields_json("title: IN [beagle]", None),
         start_timestamp: None,
         end_timestamp: None,
         max_hits: 2,
@@ -113,7 +114,7 @@ async fn test_single_node_termset() -> anyhow::Result<()> {
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -148,17 +149,16 @@ async fn test_single_search_with_snippet() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields(
+        query_ast: query_string_with_default_fields_json(
             "beagle",
             Some(vec!["title".to_string(), "body".to_string()]),
-        )
-        .unwrap(),
+        ),
         snippet_fields: vec!["title".to_string(), "body".to_string()],
         max_hits: 2,
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -190,7 +190,7 @@ async fn slop_search_and_check(
     expected_num_match: u64,
 ) -> anyhow::Result<()> {
     let query_ast =
-        query_string_with_default_fields(query, Some(vec!["body".to_string()])).unwrap();
+        query_string_with_default_fields_json(query, Some(vec!["body".to_string()]));
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
         query_ast,
@@ -198,7 +198,7 @@ async fn slop_search_and_check(
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -311,12 +311,12 @@ async fn test_single_node_several_splits() -> anyhow::Result<()> {
     }
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("beagle").unwrap(),
+        query_ast: query_string_with_default_fields_json("beagle", None),
         max_hits: 6,
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -373,8 +373,7 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
-            .unwrap(),
+        query_ast: query_string_with_default_fields_json("info", Some(vec!["body".to_string()])),
         start_timestamp: Some(start_timestamp + 10),
         end_timestamp: Some(start_timestamp + 20),
         max_hits: 15,
@@ -383,7 +382,7 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
         ..Default::default()
     };
     let single_node_response = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -396,8 +395,7 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     // filter on time range [i64::MIN 20[ should only hit first 19 docs because of filtering
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
-            .unwrap(),
+        query_ast: query_string_with_default_fields_json("info", Some(vec!["body".to_string()])),
         end_timestamp: Some(start_timestamp + 20),
         max_hits: 25,
         sort_by_field: Some("ts".to_string()),
@@ -405,7 +403,7 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
         ..Default::default()
     };
     let single_node_response = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -418,18 +416,17 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     // filter on tag, should return an error since no split is tagged
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields(
+        query_ast: query_string_with_default_fields_json(
             "tag:foo AND info",
             Some(vec!["body".to_string()]),
-        )
-        .unwrap(),
+        ),
         max_hits: 25,
         sort_by_field: Some("ts".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
     };
     let single_node_response = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -505,8 +502,10 @@ async fn single_node_search_sort_by_field(
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("city", Some(vec!["description".to_string()]))
-            .unwrap(),
+        query_ast: query_string_with_default_fields_json(
+            "city",
+            Some(vec!["description".to_string()]),
+        ),
         max_hits: 15,
         sort_by_field: Some(sort_by_field.to_string()),
         sort_order: Some(SortOrder::Desc as i32),
@@ -514,7 +513,7 @@ async fn single_node_search_sort_by_field(
     };
 
     match single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -593,7 +592,7 @@ async fn test_sort_bm25() {
     ];
     test_sandbox.add_documents(docs).await.unwrap();
     let search_hits = |query: &str| {
-        let query_ast_json = query_string_with_default_fields(query, None).unwrap();
+        let query_ast_json = query_string_with_default_fields_json(query, None);
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_ast_json,
@@ -605,7 +604,7 @@ async fn test_sort_bm25() {
         let metastore = test_sandbox.metastore();
         let storage_uri_resolver = test_sandbox.storage_uri_resolver();
         async move {
-            single_node_search(&search_request, &*metastore, storage_uri_resolver)
+            single_node_search(search_request, &*metastore, storage_uri_resolver)
                 .await
                 .unwrap()
                 .hits
@@ -668,15 +667,17 @@ async fn test_single_node_invalid_sorting_with_query() {
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("city", Some(vec!["description".to_string()]))
-            .unwrap(),
+        query_ast: query_string_with_default_fields_json(
+            "city",
+            Some(vec!["description".to_string()]),
+        ),
         max_hits: 15,
         sort_by_field: Some("description".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
         ..Default::default()
     };
     let single_node_response = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -685,7 +686,7 @@ async fn test_single_node_invalid_sorting_with_query() {
     let error_msg = single_node_response.unwrap_err().to_string();
     assert_eq!(
         error_msg,
-        "Sort by field on type text is currently not supported `description`."
+        "Invalid argument: Sort by field on type text is currently not supported `description`."
     );
     test_sandbox.assert_quit().await;
 }
@@ -711,10 +712,13 @@ async fn test_single_node_split_pruning_by_tags() -> anyhow::Result<()> {
         test_sandbox.add_documents(docs).await?;
     }
 
+    let query_ast: String = serde_json::to_string(&query_string_with_default_fields("owner:francois", None)
+        .parse_user_query(&[]).unwrap()).unwrap();
+
     let selected_splits = list_relevant_splits(
         &SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("owner:francois").unwrap(),
+            query_ast,
             ..Default::default()
         },
         &*test_sandbox.metastore(),
@@ -722,10 +726,13 @@ async fn test_single_node_split_pruning_by_tags() -> anyhow::Result<()> {
     .await?;
     assert!(selected_splits.is_empty());
 
+    let query_ast: String = serde_json::to_string(&query_string_with_default_fields("", None)
+        .parse_user_query(&[]).unwrap()).unwrap();
+
     let selected_splits = list_relevant_splits(
         &SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("").unwrap(),
+            query_ast,
             ..Default::default()
         },
         &*test_sandbox.metastore(),
@@ -733,10 +740,14 @@ async fn test_single_node_split_pruning_by_tags() -> anyhow::Result<()> {
     .await?;
     assert_eq!(selected_splits.len(), 2);
 
+
+    let query_ast: String = serde_json::to_string(&query_string_with_default_fields("owner:francois OR owner:paul OR owner:adrien", None)
+        .parse_user_query(&[]).unwrap()).unwrap();
+
     let selected_splits = list_relevant_splits(
         &SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("owner:francois OR owner:paul OR owner:adrien").unwrap(),
+            query_ast,
             ..Default::default()
         },
         &*test_sandbox.metastore(),
@@ -776,7 +787,8 @@ async fn test_search_dynamic_util(test_sandbox: &TestSandbox, query: &str) -> Ve
         .collect();
     let request = quickwit_proto::SearchRequest {
         index_id: test_sandbox.index_id().to_string(),
-        query_ast: query_string(query).unwrap(),
+        query_ast: serde_json::to_string(&query_string_with_default_fields(query, None)
+            .parse_user_query(&[]).unwrap()).unwrap(),
         max_hits: 100,
         ..Default::default()
     };
@@ -1098,13 +1110,13 @@ async fn test_single_node_aggregation() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("*").unwrap(),
+        query_ast: query_string_with_default_fields_json("*", None),
         max_hits: 2,
         aggregation_request: Some(agg_req.to_string()),
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -1171,13 +1183,13 @@ async fn test_single_node_aggregation_missing_fast_field() {
     test_sandbox.add_documents(docs.clone()).await.unwrap();
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string("*").unwrap(),
+        query_ast: query_string_with_default_fields_json("*", None),
         max_hits: 2,
         aggregation_request: Some(agg_req.to_string()),
         ..Default::default()
     };
     let single_node_result = single_node_search(
-        &search_request,
+        search_request,
         &*test_sandbox.metastore(),
         test_sandbox.storage_uri_resolver(),
     )
@@ -1214,12 +1226,12 @@ async fn test_single_node_with_ip_field() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("*").unwrap(),
+            query_ast: query_string_with_default_fields_json("*", None),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1230,16 +1242,15 @@ async fn test_single_node_with_ip_field() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields(
+            query_ast: query_string_with_default_fields_json(
                 "10.10.11.125",
                 Some(vec!["host".to_string()]),
-            )
-            .unwrap(),
+            ),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1290,13 +1301,12 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("datetime:[2023-01-10T15:13:36Z TO 2023-01-10T15:13:38Z}")
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json("datetime:[2023-01-10T15:13:36Z TO 2023-01-10T15:13:38Z}", None),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1307,12 +1317,12 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("status_code:[400 TO 401]").unwrap(),
+            query_ast: query_string_with_default_fields_json("status_code:[400 TO 401]", None),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1323,12 +1333,12 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("host:[10.0.0.0 TO 10.255.255.255]").unwrap(),
+            query_ast: query_string_with_default_fields_json("host:[10.0.0.0 TO 10.255.255.255]", None),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1339,12 +1349,12 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("latency:[100 TO *]").unwrap(),
+            query_ast: query_string_with_default_fields_json("latency:[100 TO *]", None),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1355,12 +1365,12 @@ async fn test_single_node_range_queries() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("error_code:[-1 TO 1]").unwrap(),
+            query_ast: query_string_with_default_fields_json("error_code:[-1 TO 1]", None),
             max_hits: 10,
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )
@@ -1550,12 +1560,12 @@ async fn test_single_node_find_trace_ids_collector() {
 
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string("*").unwrap(),
+            query_ast: query_string_with_default_fields_json("*", None),
             aggregation_request: Some(aggregations),
             ..Default::default()
         };
         let single_node_result = single_node_search(
-            &search_request,
+            search_request,
             &*test_sandbox.metastore(),
             test_sandbox.storage_uri_resolver(),
         )

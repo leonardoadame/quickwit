@@ -27,7 +27,7 @@ use quickwit_cluster::create_cluster_for_test;
 use quickwit_common::uri::Uri;
 use quickwit_config::service::QuickwitService;
 use quickwit_metastore::{IndexMetadata, MockMetastore};
-use quickwit_proto::{query_string, SearchRequest};
+use quickwit_proto::{query_string_json, SearchRequest};
 
 use crate::test_utils::ClusterSandbox;
 use crate::{check_cluster_configuration, node_readiness_reporting_task};
@@ -111,7 +111,7 @@ async fn test_standalone_server() {
         search_client
             .root_search(SearchRequest {
                 index_id: "my-new-index".to_string(),
-                query_ast: query_string("body:test").unwrap(),
+                query_ast: query_string_with_default_fields_json("body:test", None),
                 max_hits: 10,
                 ..Default::default()
             })
@@ -186,7 +186,7 @@ async fn test_multi_nodes_cluster() {
     let mut search_client = sandbox.get_random_search_client();
     let search_request = SearchRequest {
         index_id: "my-new-multi-node-index".to_string(),
-        query_ast: query_string("body:test").unwrap(),
+        query_ast: query_string_with_default_fields_json("body:test", None),
         max_hits: 10,
         ..Default::default()
     };

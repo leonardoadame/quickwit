@@ -143,8 +143,9 @@ async fn leaf_search_stream_single_split(
     }
 
     let search_request = Arc::new(SearchRequest::try_from(stream_request.clone())?);
-    let (query, mut warmup_info) =
-        doc_mapper.query(split_schema.clone(), &search_request, false)?;
+    let query_ast = serde_json::from_str(&search_request.query_ast)
+        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?;
+    let (query, mut warmup_info) = doc_mapper.query(split_schema.clone(), &query_ast, false)?;
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -444,11 +445,17 @@ mod tests {
     use itertools::Itertools;
     use quickwit_config::SearcherConfig;
     use quickwit_indexing::TestSandbox;
-    use quickwit_proto::query_string_with_default_fields;
+    use quickwit_query::query_string_with_default_fields;
     use serde_json::json;
     use tantivy::time::{Duration, OffsetDateTime};
 
     use super::*;
+
+    fn qast_helper(user_query: &str, search_fields: Vec<String>) -> String {
+        serde_json::to_string(&query_string_with_default_fields(user_query, Some(search_fields.to_vec()))
+            .parse_user_query(&[])
+            .unwrap()).unwrap()
+    }
 
     #[tokio::test]
     async fn test_leaf_search_stream_to_csv_output_with_filtering() -> anyhow::Result<()> {
@@ -480,8 +487,7 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: qast_helper("info", vec!["body".to_string()]),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),
@@ -558,8 +564,7 @@ mod tests {
             .unix_timestamp();
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: qast_helper("info", vec!["body".to_string()]),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),
@@ -615,8 +620,7 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: qast_helper("info", vec!["body".to_string()]),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: None,
@@ -706,8 +710,7 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: qast_helper("info", vec!["body".to_string()]),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),

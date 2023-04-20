@@ -25,6 +25,7 @@ use quickwit_common::uri::Uri;
 use quickwit_config::{build_doc_mapper, IndexConfig};
 use quickwit_metastore::Metastore;
 use quickwit_proto::{LeafSearchStreamRequest, SearchRequest, SearchStreamRequest};
+use quickwit_query::quickwit_query_ast::QueryAst;
 use tokio_stream::StreamMap;
 use tracing::*;
 
@@ -35,7 +36,7 @@ use crate::{list_relevant_splits, SearchError, SearchJobPlacer, SearchServiceCli
 /// Perform a distributed search stream.
 #[instrument(skip(metastore, cluster_client, search_job_placer))]
 pub async fn root_search_stream(
-    search_stream_request: SearchStreamRequest,
+    mut search_stream_request: SearchStreamRequest,
     metastore: &dyn Metastore,
     cluster_client: ClusterClient,
     search_job_placer: &SearchJobPlacer,
@@ -43,19 +44,27 @@ pub async fn root_search_stream(
     // TODO: building a search request should not be necessary for listing splits.
     // This needs some refactoring: relevant splits, metadata_map, jobs...
 
-    let search_request = SearchRequest::try_from(search_stream_request.clone())?;
+
     let index_config: IndexConfig = metastore
-        .index_metadata(&search_request.index_id)
+        .index_metadata(&search_stream_request.index_id)
         .await?
         .into_index_config();
-    let split_metadatas = list_relevant_splits(&search_request, metastore).await?;
+
     let doc_mapper = build_doc_mapper(&index_config.doc_mapping, &index_config.search_settings)
         .map_err(|err| {
             SearchError::InternalError(format!("Failed to build doc mapper. Cause: {err}"))
         })?;
 
+    let query_ast: QueryAst = serde_json::from_str(&search_stream_request.query_ast)
+        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?;
+    let query_ast_resolved = query_ast.parse_user_query(doc_mapper.default_search_fields())?;
+
     // Validates the query by effectively building it against the current schema.
-    doc_mapper.query(doc_mapper.schema(), &search_request, true)?;
+    doc_mapper.query(doc_mapper.schema(), &query_ast_resolved, true)?;
+    search_stream_request.query_ast = serde_json::to_string(&query_ast_resolved)?;
+
+    let search_request = SearchRequest::try_from(search_stream_request.clone())?;
+    let split_metadatas = list_relevant_splits(&search_request, metastore).await?;
 
     let doc_mapper_str = serde_json::to_string(&doc_mapper).map_err(|err| {
         SearchError::InternalError(format!("Failed to serialize doc mapper: Cause {err}"))
@@ -107,18 +116,25 @@ mod tests {
     use quickwit_grpc_clients::service_client_pool::ServiceClientPool;
     use quickwit_indexing::mock_split;
     use quickwit_metastore::{IndexMetadata, MockMetastore};
-    use quickwit_proto::{query_string_with_default_fields, OutputFormat};
+    use quickwit_proto::{query_string_with_default_fields_json, OutputFormat};
+    use quickwit_query::query_string_with_default_fields;
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use super::*;
     use crate::MockSearchService;
 
+    fn qast_util(user_query: &str, default_fields: Vec<String>) -> String {
+        serde_json::to_string(&query_string_with_default_fields(
+                user_query,
+                Some(default_fields),
+        ).parse_user_query(&[]).unwrap()).unwrap()
+    }
+
     #[tokio::test]
     async fn test_root_search_stream_single_split() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: qast_util("test", vec!["body".to_string()]),
             fast_field: "timestamp".to_string(),
             output_format: OutputFormat::Csv as i32,
             ..Default::default()
@@ -175,8 +191,7 @@ mod tests {
     async fn test_root_search_stream_single_split_partitionned() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: qast_util( "test", vec!["body".to_string()]),
             fast_field: "timestamp".to_string(),
             output_format: OutputFormat::Csv as i32,
             partition_by_field: Some("timestamp".to_string()),
@@ -231,8 +246,10 @@ mod tests {
     async fn test_root_search_stream_single_split_with_error() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             fast_field: "timestamp".to_string(),
             output_format: OutputFormat::Csv as i32,
             ..Default::default()
@@ -314,11 +331,10 @@ mod tests {
         assert!(root_search_stream(
             quickwit_proto::SearchStreamRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields(
+                query_ast: query_string_with_default_fields_json(
                     r#"invalid_field:"test""#,
                     Some(vec![])
-                )
-                .unwrap(),
+                ),
                 fast_field: "timestamp".to_string(),
                 output_format: OutputFormat::Csv as i32,
                 partition_by_field: Some("timestamp".to_string()),
@@ -334,11 +350,10 @@ mod tests {
         assert!(root_search_stream(
             quickwit_proto::SearchStreamRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields(
+                query_ast: query_string_with_default_fields_json(
                     "test",
                     Some(vec!["invalid_field".to_string()])
-                )
-                .unwrap(),
+                ),
                 fast_field: "timestamp".to_string(),
                 output_format: OutputFormat::Csv as i32,
                 partition_by_field: Some("timestamp".to_string()),

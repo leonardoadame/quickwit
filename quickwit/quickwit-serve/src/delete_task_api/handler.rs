@@ -23,7 +23,8 @@ use quickwit_config::{build_doc_mapper, IndexConfig};
 use quickwit_janitor::error::JanitorError;
 use quickwit_metastore::{Metastore, MetastoreError};
 use quickwit_proto::metastore_api::{DeleteQuery, DeleteTask};
-use quickwit_proto::{query_string_with_default_fields, SearchRequest};
+use quickwit_proto::{query_string_with_default_fields_json, SearchRequest};
+use quickwit_query::quickwit_query_ast::QueryAst;
 use serde::Deserialize;
 use warp::{Filter, Rejection};
 
@@ -134,8 +135,7 @@ pub async fn post_delete_request(
         index_id: index_id.clone(),
         start_timestamp: delete_request.start_timestamp,
         end_timestamp: delete_request.end_timestamp,
-        query_ast: query_string_with_default_fields(&delete_request.query, Some(Vec::new()))
-            .map_err(|err| JanitorError::InvalidDeleteQuery(err.to_string()))?,
+        query_ast: query_string_with_default_fields_json(&delete_request.query, Some(Vec::new())),
     };
     let index_config: IndexConfig = metastore
         .index_metadata(&delete_query.index_id)
@@ -148,8 +148,10 @@ pub async fn post_delete_request(
         .map_err(|error| JanitorError::InvalidDeleteQuery(error.to_string()))?;
 
     // Validate the delete query against the current doc mapping configuration.
+    let query_ast: QueryAst = serde_json::from_str(&delete_search_request.query_ast)
+        .map_err(|err| JanitorError::InvalidDeleteQuery(err.to_string()))?;
     doc_mapper
-        .query(doc_mapper.schema(), &delete_search_request, true)
+        .query(doc_mapper.schema(), &query_ast, true)
         .map_err(|error| JanitorError::InvalidDeleteQuery(error.to_string()))?;
     let delete_task = metastore.create_delete_task(delete_query).await?;
     Ok(delete_task)

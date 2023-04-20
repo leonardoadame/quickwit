@@ -21,7 +21,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use futures::future::try_join_all;
 use itertools::Itertools;
 use quickwit_config::{build_doc_mapper, IndexConfig};
@@ -32,6 +32,7 @@ use quickwit_proto::{
     LeafSearchRequest, LeafSearchResponse, ListTermsRequest, ListTermsResponse, PartialHit,
     SearchRequest, SearchResponse, SplitIdAndFooterOffsets,
 };
+use quickwit_query::quickwit_query_ast::QueryAst;
 use tantivy::aggregation::agg_result::AggregationResults;
 use tantivy::aggregation::intermediate_agg_result::IntermediateAggregationResults;
 use tantivy::aggregation::AggregationLimits;
@@ -144,26 +145,24 @@ fn validate_requested_snippet_fields(
     Ok(())
 }
 
-fn validate_sort_by_field(field_name: &str, schema: &Schema) -> anyhow::Result<()> {
+fn validate_sort_by_field(field_name: &str, schema: &Schema) -> crate::Result<()> {
     if field_name == "_score" {
         return Ok(());
     }
     let sort_by_field = schema
         .get_field(field_name)
-        .with_context(|| format!("Unknown sort by field: `{field_name}`"))?;
+        .map_err(|_| SearchError::InvalidArgument(format!("Unknown sort by field: `{field_name}`")))?;
     let sort_by_field_entry = schema.get_field_entry(sort_by_field);
 
     if matches!(sort_by_field_entry.field_type(), FieldType::Str(_)) {
-        bail!(
-            "Sort by field on type text is currently not supported `{}`.",
-            field_name
-        )
+        return Err(
+            SearchError::InvalidArgument(format!("Sort by field on type text is currently not supported `{field_name}`.")).into()
+        );
     }
     if !sort_by_field_entry.is_fast() {
-        bail!(
-            "Sort by field must be a fast field, please add the fast property to your field `{}`.",
-            field_name
-        )
+        return Err(SearchError::InvalidArgument(format!(
+            "Sort by field must be a fast field, please add the fast property to your field `{field_name}`.",
+        )));
     }
     Ok(())
 }
@@ -173,9 +172,6 @@ pub(crate) fn validate_request(
     search_request: &SearchRequest,
 ) -> crate::Result<()> {
     let schema = doc_mapper.schema();
-
-    // Validates the query by effectively building it against the current schema.
-    doc_mapper.query(schema.clone(), search_request, true)?;
 
     validate_requested_snippet_fields(&schema, &search_request.snippet_fields)?;
 
@@ -213,7 +209,7 @@ pub(crate) fn validate_request(
 #[instrument(skip(search_request, cluster_client, search_job_placer, metastore))]
 pub async fn root_search(
     searcher_context: Arc<SearcherContext>,
-    search_request: SearchRequest,
+    mut search_request: SearchRequest,
     metastore: &dyn Metastore,
     cluster_client: &ClusterClient,
     search_job_placer: &SearchJobPlacer,
@@ -231,6 +227,18 @@ pub async fn root_search(
         })?;
 
     validate_request(&*doc_mapper, &search_request)?;
+
+    let query_ast: QueryAst = serde_json::from_str(&search_request.query_ast)
+        .map_err(|err| SearchError::InvalidQuery(err.to_string()))?;
+    let query_ast_resolved = query_ast.parse_user_query(doc_mapper.default_search_fields())?;
+
+    // Validates the query by effectively building it against the current schema.
+    doc_mapper.query(doc_mapper.schema(), &query_ast_resolved, true)?;
+
+    search_request.query_ast = serde_json::to_string(&query_ast_resolved)
+        .map_err(|err| {
+        SearchError::InternalError(format!("Failed to serialize query ast: Cause {err}"))
+    })?;
 
     let doc_mapper_str = serde_json::to_string(&doc_mapper).map_err(|err| {
         SearchError::InternalError(format!("Failed to serialize doc mapper: Cause {err}"))
@@ -584,7 +592,7 @@ mod tests {
     use quickwit_grpc_clients::service_client_pool::ServiceClientPool;
     use quickwit_indexing::mock_split;
     use quickwit_metastore::{IndexMetadata, MockMetastore};
-    use quickwit_proto::{query_string_with_default_fields, SplitSearchError};
+    use quickwit_proto::{query_string_with_default_fields_json, SplitSearchError};
     use tantivy::schema::{FAST, STORED, TEXT};
 
     use super::*;
@@ -659,8 +667,10 @@ mod tests {
     async fn test_root_search_offset_out_of_bounds_1085() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             start_offset: 10,
             ..Default::default()
@@ -751,8 +761,10 @@ mod tests {
     async fn test_root_search_single_split() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -815,7 +827,10 @@ mod tests {
     async fn test_root_search_multiple_splits() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))?,
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -901,8 +916,10 @@ mod tests {
     async fn test_root_search_multiple_splits_retry_on_other_node() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -1015,8 +1032,10 @@ mod tests {
     async fn test_root_search_multiple_splits_retry_on_all_nodes() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -1146,8 +1165,10 @@ mod tests {
     async fn test_root_search_single_split_retry_single_node() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -1224,8 +1245,10 @@ mod tests {
     async fn test_root_search_single_split_retry_single_node_fails() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -1288,8 +1311,10 @@ mod tests {
     ) -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -1378,8 +1403,10 @@ mod tests {
     ) -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             ..Default::default()
         };
@@ -1480,15 +1507,11 @@ mod tests {
             Arc::new(SearcherContext::new(SearcherConfig::default())),
             quickwit_proto::SearchRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields(
+                query_ast: query_string_with_default_fields_json(
                     r#"invalid_field:"test""#,
                     Some(vec!["body".to_string()])
-                )
-                .unwrap(),
-                start_timestamp: None,
-                end_timestamp: None,
+                ),
                 max_hits: 10,
-                start_offset: 0,
                 ..Default::default()
             },
             &metastore,
@@ -1502,11 +1525,10 @@ mod tests {
             Arc::new(SearcherContext::new(SearcherConfig::default())),
             quickwit_proto::SearchRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields(
+                query_ast: query_string_with_default_fields_json(
                     "test",
                     Some(vec!["invalid_field".to_string()])
-                )
-                .unwrap(),
+                ),
                 max_hits: 10,
                 ..Default::default()
             },
@@ -1543,8 +1565,10 @@ mod tests {
 
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             aggregation_request: Some(agg_req.to_string()),
             ..Default::default()
@@ -1589,8 +1613,10 @@ mod tests {
     async fn test_root_search_invalid_request() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 10,
             start_offset: 20_000,
             ..Default::default()
@@ -1630,8 +1656,10 @@ mod tests {
 
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                .unwrap(),
+            query_ast: query_string_with_default_fields_json(
+                "test",
+                Some(vec!["body".to_string()]),
+            ),
             max_hits: 20_000,
             ..Default::default()
         };

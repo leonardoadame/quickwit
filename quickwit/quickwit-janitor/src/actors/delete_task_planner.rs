@@ -404,7 +404,7 @@ mod tests {
     use quickwit_indexing::TestSandbox;
     use quickwit_metastore::SplitMetadata;
     use quickwit_proto::metastore_api::DeleteQuery;
-    use quickwit_proto::{query_string, LeafSearchRequest, LeafSearchResponse};
+    use quickwit_proto::{query_string_json, LeafSearchRequest, LeafSearchResponse};
     use quickwit_search::{MockSearchService, SearchServiceClient};
     use tantivy::TrackedObject;
 
@@ -456,7 +456,7 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query_ast: query_string("body:delete").unwrap(),
+                query_ast: query_string_with_default_fields_json("body:delete", None),
                 search_fields: Vec::new(),
             })
             .await?;
@@ -465,7 +465,7 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query_ast: query_string("body:MatchNothing").unwrap(),
+                query_ast: query_string_with_default_fields_json("body:MatchNothing", None),
                 search_fields: Vec::new(),
             })
             .await?;
@@ -480,7 +480,7 @@ mod tests {
                 // that should contains the doc.
                 if request.split_offsets[0].split_id == split_id_with_doc_to_delete
                     && request.search_request.as_ref().unwrap().query_ast
-                        == query_string("body:delete").unwrap()
+                        == query_string_with_default_fields_json("body:delete", None)
                 {
                     return Ok(LeafSearchResponse {
                         num_hits: 1,

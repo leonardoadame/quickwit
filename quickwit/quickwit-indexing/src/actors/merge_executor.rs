@@ -475,7 +475,9 @@ impl MergeExecutor {
                     "Delete all documents matched by query `{:?}`",
                     search_request
                 );
-                let (query, _) = doc_mapper.query(union_index.schema(), &search_request, false)?;
+                let query_ast = serde_json::from_str(&search_request.query_ast)
+                    .context("Invalid query_ast json")?;
+                let (query, _) = doc_mapper.query(union_index.schema(), &query_ast, false)?;
                 index_writer.delete_query(Box::new(query))?;
             }
             debug!("commit-delete-operations");
@@ -677,12 +679,10 @@ mod tests {
                 index_id: index_id.to_string(),
                 start_timestamp: None,
                 end_timestamp: None,
-                query_ast: quickwit_proto::query_string_with_default_fields(
+                query_ast: quickwit_proto::query_string_with_default_fields_json(
                     delete_query,
-                    &["body"],
-                )
-                .unwrap(),
-                search_fields: Vec::new(),
+                    Some(vec!["body".to_string()]),
+                ),
             })
             .await?;
         let split_metadata = metastore

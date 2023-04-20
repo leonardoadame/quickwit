@@ -24,6 +24,7 @@ use std::num::NonZeroU32;
 use anyhow::Context;
 use dyn_clone::{clone_trait_object, DynClone};
 use quickwit_proto::SearchRequest;
+use quickwit_query::quickwit_query_ast::QueryAst;
 use serde_json::Value as JsonValue;
 use tantivy::query::Query;
 use tantivy::schema::{Field, FieldType, Schema, Value};
@@ -103,7 +104,7 @@ pub trait DocMapper: Send + Sync + Debug + DynClone + 'static {
     fn query(
         &self,
         split_schema: Schema,
-        request: &SearchRequest,
+        query_ast: &QueryAst,
         with_validation: bool,
     ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError>;
 
@@ -111,6 +112,8 @@ pub trait DocMapper: Send + Sync + Debug + DynClone + 'static {
     fn timestamp_field_name(&self) -> Option<&str> {
         None
     }
+
+    fn default_search_fields(&self) -> &[String];
 
     /// Returns the tag field names
     fn tag_field_names(&self) -> BTreeSet<String> {
@@ -195,8 +198,9 @@ impl WarmupInfo {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
 
-    use quickwit_proto::{query_string, SearchRequest};
+    use quickwit_query::query_string_with_default_fields;
     use tantivy::schema::{Field, FieldType, Term};
 
     use crate::default_doc_mapper::{
@@ -312,13 +316,9 @@ mod tests {
         });
         let doc_mapper = doc_mapper_builder.try_build().unwrap();
         let schema = doc_mapper.schema();
-        let search_request = SearchRequest {
-            index_id: "quickwit-index".to_string(),
-            query_ast: query_string("json_field.toto.titi:hello").unwrap(),
-            max_hits: 10,
-            ..Default::default()
-        };
-        let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
+        let query_ast = query_string_with_default_fields("json_field.toto.titi:hello", None)
+            .parse_user_query(doc_mapper.default_search_fields()).unwrap();
+        let (query, _) = doc_mapper.query(schema, &query_ast, true).unwrap();
         assert_eq!(
             format!("{query:?}"),
             r#"TermQuery(Term(type=Json, field=0, path=toto.titi, vtype=Str, "hello"))"#
@@ -342,14 +342,8 @@ mod tests {
             .push("text_field".to_string());
         let doc_mapper = doc_mapper_builder.try_build().unwrap();
         let schema = doc_mapper.schema();
-        let search_request = SearchRequest {
-            index_id: "quickwit-index".to_string(),
-            query_ast: query_string("text_field:hello").unwrap(),
-            max_hits: 10,
-            sort_by_field: Some("text_field".to_string()),
-            ..Default::default()
-        };
-        let query = doc_mapper.query(schema, &search_request, true).unwrap_err();
+        let query_ast = query_string_with_default_fields("text_field:hello", None);
+        let query = doc_mapper.query(schema, &query_ast, true).unwrap_err();
         assert_eq!(
             query.to_string(),
             "Sort by field on type text is currently not supported `text_field`."
@@ -362,13 +356,10 @@ mod tests {
         doc_mapper_builder.mode = ModeType::Dynamic;
         let doc_mapper = doc_mapper_builder.try_build().unwrap();
         let schema = doc_mapper.schema();
-        let search_request = SearchRequest {
-            index_id: "quickwit-index".to_string(),
-            query_ast: query_string("toto.titi:hello").unwrap(),
-            max_hits: 10,
-            ..Default::default()
-        };
-        let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
+        let query_ast = query_string_with_default_fields("toto.titi:hello", None)
+            .parse_user_query(doc_mapper.default_search_fields())
+            .unwrap();
+        let (query, _) = doc_mapper.query(schema, &query_ast, true).unwrap();
         assert_eq!(
             format!("{query:?}"),
             r#"TermQuery(Term(type=Json, field=0, path=toto.titi, vtype=Str, "hello"))"#
@@ -381,13 +372,9 @@ mod tests {
         doc_mapper_builder.mode = ModeType::Dynamic;
         let doc_mapper = doc_mapper_builder.try_build().unwrap();
         let schema = doc_mapper.schema();
-        let search_request = SearchRequest {
-            index_id: "quickwit-index".to_string(),
-            query_ast: quickwit_proto::query_string("toto:5").unwrap(),
-            max_hits: 10,
-            ..Default::default()
-        };
-        let (query, _) = doc_mapper.query(schema, &search_request, true).unwrap();
+        let query_ast = query_string_with_default_fields("toto:5", None)
+            .parse_user_query(&[]).unwrap();
+        let (query, _) = doc_mapper.query(schema, &query_ast, true).unwrap();
         assert_eq!(
             format!("{query:?}"),
             r#"BooleanQuery { subqueries: [(Should, TermQuery(Term(type=Json, field=0, path=toto, vtype=U64, 5))), (Should, TermQuery(Term(type=Json, field=0, path=toto, vtype=Str, "5")))] }"#

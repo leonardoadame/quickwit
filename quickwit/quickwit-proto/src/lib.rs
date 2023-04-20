@@ -113,8 +113,7 @@ use tonic::service::Interceptor;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-pub use quickwit_query::query_string;
-pub use quickwit_query::query_string_with_default_fields;
+pub use quickwit_query::query_string_with_default_fields_json;
 
 use ::opentelemetry::propagation::Injector;
 use ::opentelemetry::propagation::Extractor;

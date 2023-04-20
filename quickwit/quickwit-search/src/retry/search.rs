@@ -55,8 +55,8 @@ impl RetryPolicy<LeafSearchRequest, LeafSearchResponse, SearchError> for LeafSea
 #[cfg(test)]
 mod tests {
     use quickwit_proto::{
-        query_string_with_default_fields, LeafSearchRequest, LeafSearchResponse, SearchRequest,
-        SplitIdAndFooterOffsets, SplitSearchError,
+        query_string_with_default_fields_json, LeafSearchRequest, LeafSearchResponse,
+        SearchRequest, SplitIdAndFooterOffsets, SplitSearchError,
     };
 
     use crate::retry::search::LeafSearchRetryPolicy;
@@ -67,8 +67,10 @@ mod tests {
         LeafSearchRequest {
             search_request: Some(SearchRequest {
                 index_id: "test-idx".to_string(),
-                query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
-                    .unwrap(),
+                query_ast: query_string_with_default_fields_json(
+                    "test",
+                    Some(vec!["body".to_string()]),
+                ),
                 max_hits: 10,
                 ..Default::default()
             }),
