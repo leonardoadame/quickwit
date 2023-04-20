@@ -69,15 +69,13 @@ fn check_default_search_fields(
     Ok(())
 }
 
-
 /// Build a `Query` with field resolution & forbidding range clauses.
 pub(crate) fn build_query(
-    request: &SearchRequest,
+    query_ast: &QueryAst,
     schema: Schema,
     search_fields: &[String],
     with_validation: bool,
 ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
-    let query_ast: QueryAst = serde_json::from_str(&request.query_ast)?;
     let mut range_query_fields = RangeQueryFields::default();
     range_query_fields.visit(&query_ast).unwrap();
     let fast_field_names: HashSet<String> = range_query_fields.range_query_field_names;
@@ -133,10 +131,10 @@ fn extract_term_set_query_fields(query_ast: &QueryAst) -> HashSet<String> {
     visitor.term_dict_fields_to_warm_up
 }
 
-
 #[cfg(test)]
 mod test {
     use quickwit_proto::{query_string, SearchRequest};
+    use quickwit_query::quickwit_query_ast::QueryAst;
     use tantivy::schema::{Schema, FAST, INDEXED, STORED, TEXT};
 
     use super::build_query;
@@ -203,7 +201,9 @@ mod test {
             ..Default::default()
         };
         let schema = make_schema(dynamic_mode);
-        let query_result = build_query(&request, schema, &[], true);
+        let query_ast: QueryAst =
+            serde_json::from_str(&request.query_ast).map_err(|err| err.to_string())?;
+        let query_result = build_query(&query_ast, schema, &[], true);
         query_result
             .map(|query| format!("{:?}", query))
             .map_err(|err| err.to_string())
@@ -483,13 +483,15 @@ mod test {
             ..Default::default()
         };
 
-        let (_, warmup_info) = build_query(&request_with_set, make_schema(true), &[], true)?;
+        let query_ast = serde_json::from_str(&request_without_set.query_ast).unwrap();
+
+        let (_, warmup_info) = build_query(&query_ast, make_schema(true), &[], true)?;
         assert_eq!(warmup_info.term_dict_field_names.len(), 1);
         assert_eq!(warmup_info.posting_field_names.len(), 1);
         assert!(warmup_info.term_dict_field_names.contains("title"));
         assert!(warmup_info.posting_field_names.contains("title"));
 
-        let (_, warmup_info) = build_query(&request_without_set, make_schema(true), &[], true)?;
+        let (_, warmup_info) = build_query(&query_ast, make_schema(true), &[], true)?;
         assert!(warmup_info.term_dict_field_names.is_empty());
         assert!(warmup_info.posting_field_names.is_empty());
 

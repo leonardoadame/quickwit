@@ -58,7 +58,11 @@ async fn test_single_node_simple() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("anthropomorphic", Some(vec!["body".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields(
+            "anthropomorphic",
+            Some(vec!["body".to_string()]),
+        )
+        .unwrap(),
         max_hits: 2,
         ..Default::default()
     };
@@ -144,7 +148,11 @@ async fn test_single_search_with_snippet() -> anyhow::Result<()> {
     test_sandbox.add_documents(docs.clone()).await?;
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("beagle", Some(vec!["title".to_string(), "body".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields(
+            "beagle",
+            Some(vec!["title".to_string(), "body".to_string()]),
+        )
+        .unwrap(),
         snippet_fields: vec!["title".to_string(), "body".to_string()],
         max_hits: 2,
         ..Default::default()
@@ -181,7 +189,8 @@ async fn slop_search_and_check(
     query: &str,
     expected_num_match: u64,
 ) -> anyhow::Result<()> {
-    let query_ast = query_string_with_default_fields(query, Some(vec!["body".to_string()])).unwrap();
+    let query_ast =
+        query_string_with_default_fields(query, Some(vec!["body".to_string()])).unwrap();
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
         query_ast,
@@ -364,7 +373,8 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
+            .unwrap(),
         start_timestamp: Some(start_timestamp + 10),
         end_timestamp: Some(start_timestamp + 20),
         max_hits: 15,
@@ -386,7 +396,8 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     // filter on time range [i64::MIN 20[ should only hit first 19 docs because of filtering
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
+            .unwrap(),
         end_timestamp: Some(start_timestamp + 20),
         max_hits: 25,
         sort_by_field: Some("ts".to_string()),
@@ -407,7 +418,11 @@ async fn test_single_node_filtering() -> anyhow::Result<()> {
     // filter on tag, should return an error since no split is tagged
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("tag:foo AND info", Some(vec!["body".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields(
+            "tag:foo AND info",
+            Some(vec!["body".to_string()]),
+        )
+        .unwrap(),
         max_hits: 25,
         sort_by_field: Some("ts".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
@@ -490,7 +505,8 @@ async fn single_node_search_sort_by_field(
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("city", Some(vec!["description".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields("city", Some(vec!["description".to_string()]))
+            .unwrap(),
         max_hits: 15,
         sort_by_field: Some(sort_by_field.to_string()),
         sort_order: Some(SortOrder::Desc as i32),
@@ -577,8 +593,7 @@ async fn test_sort_bm25() {
     ];
     test_sandbox.add_documents(docs).await.unwrap();
     let search_hits = |query: &str| {
-        let query_ast_json =
-            query_string_with_default_fields(query, None).unwrap();
+        let query_ast_json = query_string_with_default_fields(query, None).unwrap();
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
             query_ast: query_ast_json,
@@ -653,7 +668,8 @@ async fn test_single_node_invalid_sorting_with_query() {
 
     let search_request = SearchRequest {
         index_id: index_id.to_string(),
-        query_ast: query_string_with_default_fields("city", Some(vec!["description".to_string()])).unwrap(),
+        query_ast: query_string_with_default_fields("city", Some(vec!["description".to_string()]))
+            .unwrap(),
         max_hits: 15,
         sort_by_field: Some("description".to_string()),
         sort_order: Some(SortOrder::Desc as i32),
@@ -1214,7 +1230,11 @@ async fn test_single_node_with_ip_field() -> anyhow::Result<()> {
     {
         let search_request = SearchRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("10.10.11.125", Some(vec!["host".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields(
+                "10.10.11.125",
+                Some(vec!["host".to_string()]),
+            )
+            .unwrap(),
             max_hits: 10,
             ..Default::default()
         };

@@ -368,8 +368,9 @@ impl DocMapper for DefaultDocMapper {
         request: &SearchRequest,
         with_validation: bool,
     ) -> Result<(Box<dyn Query>, WarmupInfo), QueryParserError> {
+        let query_ast = serde_json::from_str(&request.query_ast).unwrap();
         build_query(
-            request,
+            &query_ast,
             split_schema,
             &self.default_search_field_names[..],
             with_validation,

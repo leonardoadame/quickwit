@@ -480,7 +480,8 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
+                .unwrap(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),
@@ -557,7 +558,8 @@ mod tests {
             .unix_timestamp();
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
+                .unwrap(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),
@@ -613,7 +615,8 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
+                .unwrap(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: None,
@@ -703,7 +706,8 @@ mod tests {
 
         let request = SearchStreamRequest {
             index_id: index_id.to_string(),
-            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("info", Some(vec!["body".to_string()]))
+                .unwrap(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: Some(end_timestamp),

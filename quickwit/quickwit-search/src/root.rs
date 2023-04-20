@@ -21,7 +21,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use futures::future::try_join_all;
 use itertools::Itertools;
 use quickwit_config::{build_doc_mapper, IndexConfig};
@@ -36,8 +36,8 @@ use tantivy::aggregation::agg_result::AggregationResults;
 use tantivy::aggregation::intermediate_agg_result::IntermediateAggregationResults;
 use tantivy::aggregation::AggregationLimits;
 use tantivy::collector::Collector;
+use tantivy::schema::{FieldType, Schema};
 use tantivy::TantivyError;
-use tantivy::schema::{Schema, FieldType};
 use tracing::{debug, error, info_span, instrument};
 
 use crate::cluster_client::ClusterClient;
@@ -172,7 +172,6 @@ pub(crate) fn validate_request(
     doc_mapper: &dyn DocMapper,
     search_request: &SearchRequest,
 ) -> crate::Result<()> {
-
     let schema = doc_mapper.schema();
 
     // Validates the query by effectively building it against the current schema.
@@ -586,7 +585,7 @@ mod tests {
     use quickwit_indexing::mock_split;
     use quickwit_metastore::{IndexMetadata, MockMetastore};
     use quickwit_proto::{query_string_with_default_fields, SplitSearchError};
-    use tantivy::schema::{TEXT, STORED, FAST};
+    use tantivy::schema::{FAST, STORED, TEXT};
 
     use super::*;
     use crate::MockSearchService;
@@ -660,7 +659,8 @@ mod tests {
     async fn test_root_search_offset_out_of_bounds_1085() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             start_offset: 10,
             ..Default::default()
@@ -751,7 +751,8 @@ mod tests {
     async fn test_root_search_single_split() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -900,7 +901,8 @@ mod tests {
     async fn test_root_search_multiple_splits_retry_on_other_node() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -1013,7 +1015,8 @@ mod tests {
     async fn test_root_search_multiple_splits_retry_on_all_nodes() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -1143,7 +1146,8 @@ mod tests {
     async fn test_root_search_single_split_retry_single_node() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -1220,7 +1224,8 @@ mod tests {
     async fn test_root_search_single_split_retry_single_node_fails() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -1283,7 +1288,8 @@ mod tests {
     ) -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -1372,7 +1378,8 @@ mod tests {
     ) -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -1473,8 +1480,11 @@ mod tests {
             Arc::new(SearcherContext::new(SearcherConfig::default())),
             quickwit_proto::SearchRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields(r#"invalid_field:"test""#, Some(vec!["body".to_string()]))
-                    .unwrap(),
+                query_ast: query_string_with_default_fields(
+                    r#"invalid_field:"test""#,
+                    Some(vec!["body".to_string()])
+                )
+                .unwrap(),
                 start_timestamp: None,
                 end_timestamp: None,
                 max_hits: 10,
@@ -1492,7 +1502,11 @@ mod tests {
             Arc::new(SearcherContext::new(SearcherConfig::default())),
             quickwit_proto::SearchRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields("test", Some(vec!["invalid_field".to_string()])).unwrap(),
+                query_ast: query_string_with_default_fields(
+                    "test",
+                    Some(vec!["invalid_field".to_string()])
+                )
+                .unwrap(),
                 max_hits: 10,
                 ..Default::default()
             },
@@ -1529,7 +1543,8 @@ mod tests {
 
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             aggregation_request: Some(agg_req.to_string()),
             ..Default::default()
@@ -1574,7 +1589,8 @@ mod tests {
     async fn test_root_search_invalid_request() -> anyhow::Result<()> {
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 10,
             start_offset: 20_000,
             ..Default::default()
@@ -1614,7 +1630,8 @@ mod tests {
 
         let search_request = quickwit_proto::SearchRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()]))
+                .unwrap(),
             max_hits: 20_000,
             ..Default::default()
         };
