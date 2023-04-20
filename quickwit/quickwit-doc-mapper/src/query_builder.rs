@@ -20,12 +20,11 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 
-use anyhow::{bail, Context};
 use quickwit_proto::SearchRequest;
 use quickwit_query::find_field_or_hit_dynamic;
 use quickwit_query::quickwit_query_ast::{QueryAst, QueryAstVisitor, RangeQuery};
 use tantivy::query::Query;
-use tantivy::schema::{Field, FieldType, Schema};
+use tantivy::schema::{Field, Schema};
 
 use crate::{QueryParserError, WarmupInfo};
 
@@ -70,34 +69,6 @@ fn check_default_search_fields(
     Ok(())
 }
 
-fn validate_requested_snippet_fields(
-    schema: &Schema,
-    snippet_fields: &[String],
-) -> anyhow::Result<()> {
-    for field_name in snippet_fields {
-        let field_entry = schema
-            .get_field(field_name)
-            .map(|field| schema.get_field_entry(field))?;
-        match field_entry.field_type() {
-            FieldType::Str(text_options) => {
-                if !text_options.is_stored() {
-                    return Err(anyhow::anyhow!(
-                        "The snippet field `{}` must be stored.",
-                        field_name
-                    ));
-                }
-            }
-            other => {
-                return Err(anyhow::anyhow!(
-                    "The snippet field `{}` must be of type `Str`, got `{}`.",
-                    field_name,
-                    other.value_type().name()
-                ))
-            }
-        }
-    }
-    Ok(())
-}
 
 /// Build a `Query` with field resolution & forbidding range clauses.
 pub(crate) fn build_query(
@@ -110,12 +81,6 @@ pub(crate) fn build_query(
     let mut range_query_fields = RangeQueryFields::default();
     range_query_fields.visit(&query_ast).unwrap();
     let fast_field_names: HashSet<String> = range_query_fields.range_query_field_names;
-
-    validate_requested_snippet_fields(&schema, &request.snippet_fields)?;
-
-    if let Some(sort_by_field) = &request.sort_by_field {
-        validate_sort_by_field(sort_by_field, &schema)?;
-    }
 
     let query = query_ast.build_tantivy_query(&schema, search_fields, with_validation)?;
 
@@ -168,30 +133,6 @@ fn extract_term_set_query_fields(query_ast: &QueryAst) -> HashSet<String> {
     visitor.term_dict_fields_to_warm_up
 }
 
-fn validate_sort_by_field(field_name: &str, schema: &Schema) -> anyhow::Result<()> {
-    if field_name == "_score" {
-        return Ok(());
-    }
-    let sort_by_field = schema
-        .get_field(field_name)
-        .with_context(|| format!("Unknown sort by field: `{field_name}`"))?;
-    let sort_by_field_entry = schema.get_field_entry(sort_by_field);
-
-    if matches!(sort_by_field_entry.field_type(), FieldType::Str(_)) {
-        bail!(
-            "Sort by field on type text is currently not supported `{}`.",
-            field_name
-        )
-    }
-    if !sort_by_field_entry.is_fast() {
-        bail!(
-            "Sort by field must be a fast field, please add the fast property to your field `{}`.",
-            field_name
-        )
-    }
-
-    Ok(())
-}
 
 #[cfg(test)]
 mod test {
@@ -199,7 +140,6 @@ mod test {
     use tantivy::schema::{Schema, FAST, INDEXED, STORED, TEXT};
 
     use super::build_query;
-    use crate::query_builder::validate_requested_snippet_fields;
     use crate::{DYNAMIC_FIELD_NAME, SOURCE_FIELD_NAME};
 
     enum TestExpectation {
@@ -256,14 +196,14 @@ mod test {
             index_id: "test_index".to_string(),
             query_ast: quickwit_proto::query_string_with_default_fields(
                 user_query,
-                &search_fields[..],
+                Some(search_fields.clone()),
             )
             .map_err(|err| err.to_string())?,
             max_hits: 20,
             ..Default::default()
         };
         let schema = make_schema(dynamic_mode);
-        let query_result = build_query(&request, schema, &search_fields[..], true);
+        let query_result = build_query(&request, schema, &[], true);
         query_result
             .map(|query| format!("{:?}", query))
             .map_err(|err| err.to_string())
@@ -517,41 +457,12 @@ mod test {
         );
     }
 
-    #[track_caller]
-    fn check_snippet_fields_validation(snippet_fields: &[String]) -> anyhow::Result<()> {
-        let schema = make_schema(true);
-        validate_requested_snippet_fields(&schema, snippet_fields)
-    }
-
     #[test]
     fn test_build_query_not_bool_should_fail() {
         check_build_query_static_mode(
             "server.running:notabool",
             Vec::new(),
             TestExpectation::Err("Expected a `bool` search value for field `server.running`"),
-        );
-    }
-
-    #[test]
-    fn test_validate_requested_snippet_fields() {
-        check_snippet_fields_validation(&["desc".to_string()]).unwrap();
-        let field_not_stored_err =
-            check_snippet_fields_validation(&["title".to_string()]).unwrap_err();
-        assert_eq!(
-            field_not_stored_err.to_string(),
-            "The snippet field `title` must be stored."
-        );
-        let field_doesnotexist_err =
-            check_snippet_fields_validation(&["doesnotexist".to_string()]).unwrap_err();
-        assert_eq!(
-            field_doesnotexist_err.to_string(),
-            "The field does not exist: 'doesnotexist'"
-        );
-        let field_is_not_text_err =
-            check_snippet_fields_validation(&["ip".to_string()]).unwrap_err();
-        assert_eq!(
-            field_is_not_text_err.to_string(),
-            "The snippet field `ip` must be of type `Str`, got `IpAddr`."
         );
     }
 
@@ -572,13 +483,13 @@ mod test {
             ..Default::default()
         };
 
-        let (_, warmup_info) = build_query(&request_with_set, make_schema(true), true)?;
+        let (_, warmup_info) = build_query(&request_with_set, make_schema(true), &[], true)?;
         assert_eq!(warmup_info.term_dict_field_names.len(), 1);
         assert_eq!(warmup_info.posting_field_names.len(), 1);
         assert!(warmup_info.term_dict_field_names.contains("title"));
         assert!(warmup_info.posting_field_names.contains("title"));
 
-        let (_, warmup_info) = build_query(&request_without_set, make_schema(true), true)?;
+        let (_, warmup_info) = build_query(&request_without_set, make_schema(true), &[], true)?;
         assert!(warmup_info.term_dict_field_names.is_empty());
         assert!(warmup_info.posting_field_names.is_empty());
 

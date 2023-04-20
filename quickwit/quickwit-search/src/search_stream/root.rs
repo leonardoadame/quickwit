@@ -117,14 +117,10 @@ mod tests {
     async fn test_root_search_stream_single_split() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
-            search_fields: vec!["body".to_string()],
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
             fast_field: "timestamp".to_string(),
             output_format: OutputFormat::Csv as i32,
-            partition_by_field: None,
+            .. Default::default()
         };
         let mut metastore = MockMetastore::new();
         metastore
@@ -178,14 +174,11 @@ mod tests {
     async fn test_root_search_stream_single_split_partitionned() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
-            search_fields: vec!["body".to_string()],
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
             fast_field: "timestamp".to_string(),
             output_format: OutputFormat::Csv as i32,
             partition_by_field: Some("timestamp".to_string()),
+            .. Default::default()
         };
         let mut metastore = MockMetastore::new();
         metastore
@@ -236,14 +229,10 @@ mod tests {
     async fn test_root_search_stream_single_split_with_error() -> anyhow::Result<()> {
         let request = quickwit_proto::SearchStreamRequest {
             index_id: "test-index".to_string(),
-            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
-            search_fields: vec!["body".to_string()],
-            snippet_fields: Vec::new(),
-            start_timestamp: None,
-            end_timestamp: None,
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
             fast_field: "timestamp".to_string(),
             output_format: OutputFormat::Csv as i32,
-            partition_by_field: None,
+            .. Default::default()
         };
         let mut metastore = MockMetastore::new();
         metastore
@@ -322,15 +311,12 @@ mod tests {
         assert!(root_search_stream(
             quickwit_proto::SearchStreamRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields(r#"invalid_field:"test""#, &[])
+                query_ast: query_string_with_default_fields(r#"invalid_field:"test""#, Some(vec![]))
                     .unwrap(),
-                search_fields: vec!["body".to_string()],
-                snippet_fields: Vec::new(),
-                start_timestamp: None,
-                end_timestamp: None,
                 fast_field: "timestamp".to_string(),
                 output_format: OutputFormat::Csv as i32,
                 partition_by_field: Some("timestamp".to_string()),
+                .. Default::default()
             },
             &metastore,
             ClusterClient::new(search_job_placer.clone()),
@@ -342,14 +328,11 @@ mod tests {
         assert!(root_search_stream(
             quickwit_proto::SearchStreamRequest {
                 index_id: "test-index".to_string(),
-                query_ast: query_string_with_default_fields("test", &["invalid_field"]).unwrap(),
-                search_fields: vec!["invalid_field".to_string()],
-                snippet_fields: Vec::new(),
-                start_timestamp: None,
-                end_timestamp: None,
+                query_ast: query_string_with_default_fields("test", Some(vec!["invalid_field".to_string()])).unwrap(),
                 fast_field: "timestamp".to_string(),
                 output_format: OutputFormat::Csv as i32,
                 partition_by_field: Some("timestamp".to_string()),
+                .. Default::default()
             },
             &metastore,
             ClusterClient::new(search_job_placer.clone()),

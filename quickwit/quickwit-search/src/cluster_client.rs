@@ -266,7 +266,7 @@ mod tests {
     fn mock_leaf_search_request() -> LeafSearchRequest {
         let search_request = SearchRequest {
             index_id: "test-idx".to_string(),
-            query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
+            query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
             max_hits: 10,
             ..Default::default()
         };
@@ -292,8 +292,7 @@ mod tests {
     fn mock_leaf_search_stream_request() -> LeafSearchStreamRequest {
         let search_request = SearchStreamRequest {
             index_id: "test-idx".to_string(),
-            query_ast: query_string_with_default_fields("text", &["body"]).unwrap(),
-            search_fields: vec!["body".to_string()],
+            query_ast: query_string_with_default_fields("text", Some(vec!["body".to_string()])).unwrap(),
             snippet_fields: Vec::new(),
             start_timestamp: None,
             end_timestamp: None,

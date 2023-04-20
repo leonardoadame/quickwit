@@ -67,7 +67,7 @@ mod tests {
         LeafSearchRequest {
             search_request: Some(SearchRequest {
                 index_id: "test-idx".to_string(),
-                query_ast: query_string_with_default_fields("test", &["body"]).unwrap(),
+                query_ast: query_string_with_default_fields("test", Some(vec!["body".to_string()])).unwrap(),
                 max_hits: 10,
                 ..Default::default()
             }),
