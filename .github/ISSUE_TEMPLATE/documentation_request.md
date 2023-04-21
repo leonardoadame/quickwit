@@ -15,15 +15,14 @@ sentence that describes the topic of your enhancement!
 
 -->
 
+Leonardo
 ## My documentation idea
 
 Use this section to give a description of what your enhancement is about.
 
 Examples:
 
-> I would like to add how to configure MinIO storage for Quickwit:
->
-
+> I would like to add how to configure MinIO storage for Quickwit:App
 **What do you all think?**
 👍 I would love to see it!
 🚀 I would love to help!
