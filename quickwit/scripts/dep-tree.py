@@ -3,24 +3,22 @@ from collections import defaultdict
 import graphviz
 
 FILTER = {
-	"quickwit-backward-compat",
-	"quickwit-actors",
-	"quickwit-cli",
+    "quickwit-backward-compat",
+    "quickwit-actors",
+    "quickwit-cli",
+    "quickwit-doc-mapper",
+    "quickwit-search",
+    "quickwit-indexing",
+    "quickwit-metastore",
+    "quickwit-proto",
+    "quickwit-directories",
+    "quickwit-common",
     "quickwit-rest-client",
-	"quickwit-doc-mapper",
-	"quickwit-search",
-	"quickwit-common",
-	"quickwit-indexing",
-	"quickwit-metastore",
-	"quickwit-proto",
-	"quickwit-directories",
-	"quickwit-common",
-    "quickwit-rest-client",
-	"quickwit-serve",
-	"quickwit-storage",
-	"quickwit-cluster",
-	"quickwit-core",
-    "tantivy"
+    "quickwit-serve",
+    "quickwit-storage",
+    "quickwit-cluster",
+    "quickwit-core",
+    "tantivy",
 }
 
 def deps():
@@ -37,9 +35,8 @@ def deps():
         code = int(code)
         last_level[code] = package
         print(line)
-        if code > 0:
-            if (code - 1) in last_level:
-                deps[last_level[code - 1]].add(package)
+        if code > 0 and (code - 1) in last_level:
+            deps[last_level[code - 1]].add(package)
     return dict(deps)
 
 
