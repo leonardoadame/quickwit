@@ -87,6 +87,7 @@
     },
     "version": "0.5"
   },
+  "index_uid": "my-index",
   "sources": [
     {
       "desired_num_pipelines": 2,
