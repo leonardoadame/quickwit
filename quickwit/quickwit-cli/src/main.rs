@@ -32,9 +32,7 @@ use quickwit_cli::{
     busy_detector, QW_ENABLE_JAEGER_EXPORTER_ENV_KEY, QW_ENABLE_OPENTELEMETRY_OTLP_EXPORTER_ENV_KEY,
 };
 use quickwit_common::RED_COLOR;
-use quickwit_serve::{quickwit_build_info, QuickwitBuildInfo};
-use quickwit_telemetry::payload::TelemetryEvent;
-use tonic::metadata::MetadataMap;
+use quickwit_serve::BuildInfo;
 use tracing::Level;
 use tracing_subscriber::fmt::time::UtcTime;
 use tracing_subscriber::prelude::*;
@@ -43,7 +41,7 @@ use tracing_subscriber::EnvFilter;
 fn setup_logging_and_tracing(
     level: Level,
     ansi: bool,
-    build_info: &QuickwitBuildInfo,
+    build_info: &BuildInfo,
 ) -> anyhow::Result<()> {
     #[cfg(feature = "tokio-console")]
     {
@@ -83,16 +81,11 @@ fn setup_logging_and_tracing(
             .try_init()
             .context("Failed to set up tracing.")?;
     } else if std::env::var_os(QW_ENABLE_OPENTELEMETRY_OTLP_EXPORTER_ENV_KEY).is_some() {
-        let mut metadata_map = MetadataMap::with_capacity(2);
-        metadata_map.insert("version", build_info.version.parse()?);
-        metadata_map.insert("commit", build_info.commit_short_hash.parse()?);
-
-        let otlp_exporter = opentelemetry_otlp::new_exporter()
-            .tonic()
-            .with_env()
-            .with_metadata(metadata_map);
-        let trace_config = trace::config()
-            .with_resource(Resource::new([KeyValue::new("service.name", "quickwit")]));
+        let otlp_exporter = opentelemetry_otlp::new_exporter().tonic().with_env();
+        let trace_config = trace::config().with_resource(Resource::new([
+            KeyValue::new("service.name", "quickwit"),
+            KeyValue::new("service.version", build_info.version.clone()),
+        ]));
         let tracer = opentelemetry_otlp::new_pipeline()
             .tracing()
             .with_exporter(otlp_exporter)
@@ -127,20 +120,18 @@ async fn main_impl() -> anyhow::Result<()> {
     #[cfg(feature = "openssl-support")]
     openssl_probe::init_ssl_cert_env_vars();
 
-    let telemetry_handle = quickwit_telemetry::start_telemetry_loop();
     let about_text = about_text();
-    let build_info = quickwit_build_info();
+    let build_info = BuildInfo::get();
     let version_text = format!(
         "{} ({} {})",
         build_info.version, build_info.commit_short_hash, build_info.build_date
     );
 
-    let app = build_cli()
-        .about(about_text.as_str())
-        .version(version_text.as_str());
+    let app = build_cli().about(about_text).version(version_text);
     let matches = app.get_matches();
+    let ansi = !matches.get_flag("no-color");
 
-    let command = match CliCommand::parse_cli_args(&matches) {
+    let command = match CliCommand::parse_cli_args(matches) {
         Ok(command) => command,
         Err(err) => {
             eprintln!("Failed to parse command arguments: {err:?}");
@@ -151,19 +142,14 @@ async fn main_impl() -> anyhow::Result<()> {
     #[cfg(feature = "jemalloc")]
     start_jemalloc_metrics_loop();
 
-    setup_logging_and_tracing(
-        command.default_log_level(),
-        !matches.is_present("no-color"),
-        build_info,
-    )?;
+    setup_logging_and_tracing(command.default_log_level(), ansi, build_info)?;
     let return_code: i32 = if let Err(err) = command.execute().await {
         eprintln!("{} Command failed: {:?}\n", "✘".color(RED_COLOR), err);
         1
     } else {
         0
     };
-    quickwit_telemetry::send_telemetry_event(TelemetryEvent::EndCommand { return_code }).await;
-    telemetry_handle.terminate_telemetry().await;
+
     global::shutdown_tracer_provider();
     std::process::exit(return_code)
 }
@@ -173,7 +159,7 @@ fn about_text() -> String {
     let mut about_text = String::from(
         "Sub-second search & analytics engine on cloud storage.\n  Find more information at https://quickwit.io/docs\n\n",
     );
-    if quickwit_telemetry::is_telemetry_enabled() {
+    if !quickwit_telemetry::is_telemetry_disabled() {
         about_text += "Telemetry: enabled";
     }
     about_text
@@ -185,6 +171,7 @@ mod tests {
     use std::str::FromStr;
     use std::time::Duration;
 
+    use byte_unit::Byte;
     use quickwit_cli::cli::{build_cli, CliCommand};
     use quickwit_cli::index::{
         ClearIndexArgs, CreateIndexArgs, DeleteIndexArgs, DescribeIndexArgs, IndexCliCommand,
@@ -194,7 +181,10 @@ mod tests {
     use quickwit_cli::tool::{
         ExtractSplitArgs, GarbageCollectIndexArgs, LocalIngestDocsArgs, MergeArgs, ToolCliCommand,
     };
+    use quickwit_cli::ClientArgs;
     use quickwit_common::uri::Uri;
+    use quickwit_config::SourceInputFormat;
+    use quickwit_rest_client::models::Timeout;
     use quickwit_rest_client::rest_client::CommitType;
     use reqwest::Url;
 
@@ -204,9 +194,9 @@ mod tests {
         let matches = app
             .try_get_matches_from(["index", "clear", "--index", "wikipedia"])
             .unwrap();
-        let command = CliCommand::parse_cli_args(&matches).unwrap();
+        let command = CliCommand::parse_cli_args(matches).unwrap();
         let expected_cmd = CliCommand::Index(IndexCliCommand::Clear(ClearIndexArgs {
-            cluster_endpoint: Url::from_str("http://127.0.0.1:7280").unwrap(),
+            client_args: ClientArgs::default(),
             index_id: "wikipedia".to_string(),
             assume_yes: false,
         }));
@@ -216,9 +206,9 @@ mod tests {
         let matches = app
             .try_get_matches_from(["index", "clear", "--index", "wikipedia", "--yes"])
             .unwrap();
-        let command = CliCommand::parse_cli_args(&matches).unwrap();
+        let command = CliCommand::parse_cli_args(matches).unwrap();
         let expected_cmd = CliCommand::Index(IndexCliCommand::Clear(ClearIndexArgs {
-            cluster_endpoint: Url::from_str("http://127.0.0.1:7280").unwrap(),
+            client_args: ClientArgs::default(),
             index_id: "wikipedia".to_string(),
             assume_yes: true,
         }));
@@ -235,14 +225,14 @@ mod tests {
         let app = build_cli().no_binary_name(true);
         let matches =
             app.try_get_matches_from(["index", "create", "--index-config", "index-conf.yaml"])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         let expected_index_config_uri = Uri::from_str(&format!(
             "file://{}/index-conf.yaml",
             std::env::current_dir().unwrap().display()
         ))
         .unwrap();
         let expected_cmd = CliCommand::Index(IndexCliCommand::Create(CreateIndexArgs {
-            cluster_endpoint: Url::from_str("http://127.0.0.1:7280").unwrap(),
+            client_args: ClientArgs::default(),
             index_config_uri: expected_index_config_uri.clone(),
             overwrite: false,
             assume_yes: false,
@@ -257,9 +247,9 @@ mod tests {
             "index-conf.yaml",
             "--overwrite",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         let expected_cmd = CliCommand::Index(IndexCliCommand::Create(CreateIndexArgs {
-            cluster_endpoint: Url::from_str("http://127.0.0.1:7280").unwrap(),
+            client_args: ClientArgs::default(),
             index_config_uri: expected_index_config_uri,
             overwrite: true,
             assume_yes: false,
@@ -280,49 +270,137 @@ mod tests {
             "--endpoint",
             "http://127.0.0.1:8000",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Ingest(
                 IngestDocsArgs {
-                    cluster_endpoint,
+                    client_args,
                     index_id,
                     input_path_opt: None,
+                    batch_size_limit_opt: None,
                     commit_type: CommitType::Auto,
                 })) if &index_id == "wikipedia"
-                       && cluster_endpoint == Url::from_str("http://127.0.0.1:8000").unwrap()
+                && client_args.timeout.is_none()
+                && client_args.connect_timeout.is_none()
+                && client_args.commit_timeout.is_none()
+                && client_args.cluster_endpoint == Url::from_str("http://127.0.0.1:8000").unwrap()
         ));
 
         let app = build_cli().no_binary_name(true);
-        let matches =
-            app.try_get_matches_from(["index", "ingest", "--index", "wikipedia", "--force"])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let matches = app.try_get_matches_from([
+            "index",
+            "ingest",
+            "--index",
+            "wikipedia",
+            "--batch-size-limit",
+            "8MB",
+            "--force",
+        ])?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Ingest(
                 IngestDocsArgs {
-                    cluster_endpoint,
+                    client_args,
                     index_id,
                     input_path_opt: None,
+                    batch_size_limit_opt: Some(batch_size_limit),
                     commit_type: CommitType::Force,
                 })) if &index_id == "wikipedia"
-                        && cluster_endpoint == Url::from_str("http://127.0.0.1:7280").unwrap()
+                        && client_args.cluster_endpoint == Url::from_str("http://127.0.0.1:7280").unwrap()
+                        && client_args.timeout.is_none()
+                        && client_args.connect_timeout.is_none()
+                        && client_args.commit_timeout.is_none()
+                        && batch_size_limit == Byte::from_str("8MB").unwrap()
+
         ));
 
         let app = build_cli().no_binary_name(true);
-        let matches =
-            app.try_get_matches_from(["index", "ingest", "--index", "wikipedia", "--wait"])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let matches = app.try_get_matches_from([
+            "index",
+            "ingest",
+            "--index",
+            "wikipedia",
+            "--batch-size-limit",
+            "4KB",
+            "--wait",
+        ])?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Ingest(
                 IngestDocsArgs {
-                    cluster_endpoint,
+                    client_args,
                     index_id,
                     input_path_opt: None,
+                    batch_size_limit_opt: Some(batch_size_limit),
                     commit_type: CommitType::WaitFor,
                 })) if &index_id == "wikipedia"
-                        && cluster_endpoint == Url::from_str("http://127.0.0.1:7280").unwrap()
+                    && client_args.cluster_endpoint == Url::from_str("http://127.0.0.1:7280").unwrap()
+                    && client_args.timeout.is_none()
+                    && client_args.connect_timeout.is_none()
+                    && client_args.commit_timeout.is_none()
+                    && batch_size_limit == Byte::from_str("4KB").unwrap()
+        ));
+
+        let app = build_cli().no_binary_name(true);
+        let matches = app.try_get_matches_from([
+            "index",
+            "ingest",
+            "--index",
+            "wikipedia",
+            "--timeout",
+            "10s",
+            "--connect-timeout",
+            "2s",
+        ])?;
+        let command = CliCommand::parse_cli_args(matches)?;
+        assert!(matches!(
+            command,
+            CliCommand::Index(IndexCliCommand::Ingest(
+                IngestDocsArgs {
+                    client_args,
+                    index_id,
+                    input_path_opt: None,
+                    batch_size_limit_opt: None,
+                    commit_type: CommitType::Auto,
+                })) if &index_id == "wikipedia"
+                        && client_args.cluster_endpoint == Url::from_str("http://127.0.0.1:7280").unwrap()
+                        && client_args.timeout == Some(Timeout::from_secs(10))
+                        && client_args.connect_timeout == Some(Timeout::from_secs(2))
+                        && client_args.commit_timeout.is_none()
+        ));
+
+        let app = build_cli().no_binary_name(true);
+        let matches = app.try_get_matches_from([
+            "index",
+            "ingest",
+            "--index",
+            "wikipedia",
+            "--timeout",
+            "none",
+            "--wait",
+            "--connect-timeout",
+            "15s",
+            "--commit-timeout",
+            "4h",
+        ])?;
+        let command = CliCommand::parse_cli_args(matches)?;
+        assert!(matches!(
+            command,
+            CliCommand::Index(IndexCliCommand::Ingest(
+                IngestDocsArgs {
+                    client_args,
+                    index_id,
+                    input_path_opt: None,
+                    batch_size_limit_opt: None,
+                    commit_type: CommitType::WaitFor,
+                })) if &index_id == "wikipedia"
+                        && client_args.cluster_endpoint == Url::from_str("http://127.0.0.1:7280").unwrap()
+                        && client_args.timeout == Some(Timeout::none())
+                        && client_args.connect_timeout == Some(Timeout::from_secs(15))
+                        && client_args.commit_timeout == Some(Timeout::from_hours(4))
         ));
 
         let app = build_cli().no_binary_name(true);
@@ -337,7 +415,7 @@ mod tests {
             ])
             .unwrap_err()
             .kind(),
-            clap::ErrorKind::ArgumentConflict
+            clap::error::ErrorKind::ArgumentConflict
         );
         Ok(())
     }
@@ -355,12 +433,13 @@ mod tests {
                 "/config.yaml",
                 "--overwrite",
                 "--keep-cache",
+                "--input-format",
+                "plain",
                 "--transform-script",
                 ".message = downcase(string!(.message))",
             ])
             .unwrap();
-        let command = CliCommand::parse_cli_args(&matches).unwrap();
-        println!("{command:?}");
+        let command = CliCommand::parse_cli_args(matches).unwrap();
         assert!(matches!(
             command,
             CliCommand::Tool(ToolCliCommand::LocalIngest(
@@ -368,6 +447,7 @@ mod tests {
                     config_uri,
                     index_id,
                     input_path_opt: None,
+                    input_format,
                     overwrite,
                     vrl_script: Some(vrl_script),
                     clear_cache,
@@ -376,6 +456,7 @@ mod tests {
                        && vrl_script == ".message = downcase(string!(.message))"
                        && overwrite
                        && !clear_cache
+                       && input_format == SourceInputFormat::PlainText,
         ));
     }
 
@@ -390,7 +471,7 @@ mod tests {
             "--query",
             "Barack Obama",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Search(SearchIndexArgs {
@@ -429,11 +510,11 @@ mod tests {
             "--snippet-fields",
             "body",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
-        let _cluster_endpoint = Uri::from_str("http://127.0.0.1:7280").unwrap();
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Search(SearchIndexArgs {
+                client_args: _,
                 index_id,
                 query,
                 aggregation: None,
@@ -443,7 +524,6 @@ mod tests {
                 snippet_fields: Some(snippet_field_names),
                 start_timestamp: Some(0),
                 end_timestamp: Some(1),
-                cluster_endpoint: _cluster_endpoint,
                 sort_by_score: false,
             })) if &index_id == "wikipedia"
                   && query == "Barack Obama"
@@ -459,7 +539,7 @@ mod tests {
         let matches = app
             .try_get_matches_from(["index", "delete", "--index", "wikipedia"])
             .unwrap();
-        let command = CliCommand::parse_cli_args(&matches).unwrap();
+        let command = CliCommand::parse_cli_args(matches).unwrap();
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Delete(DeleteIndexArgs {
@@ -473,7 +553,7 @@ mod tests {
         let matches = app
             .try_get_matches_from(["index", "delete", "--index", "wikipedia", "--dry-run"])
             .unwrap();
-        let command = CliCommand::parse_cli_args(&matches).unwrap();
+        let command = CliCommand::parse_cli_args(matches).unwrap();
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Delete(DeleteIndexArgs {
@@ -490,7 +570,7 @@ mod tests {
         let matches = app
             .try_get_matches_from(["index", "describe", "--index", "wikipedia"])
             .unwrap();
-        let command = CliCommand::parse_cli_args(&matches).unwrap();
+        let command = CliCommand::parse_cli_args(matches).unwrap();
         assert!(matches!(
             command,
             CliCommand::Index(IndexCliCommand::Describe(DescribeIndexArgs {
@@ -511,7 +591,7 @@ mod tests {
             "--split",
             "ABC",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Split(SplitCliCommand::Describe(DescribeSplitArgs {
@@ -539,7 +619,7 @@ mod tests {
             "--config",
             "/config.yaml",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Tool(ToolCliCommand::ExtractSplit(ExtractSplitArgs {
@@ -563,7 +643,7 @@ mod tests {
             "--config",
             "/config.yaml",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Tool(ToolCliCommand::GarbageCollect(GarbageCollectIndexArgs {
@@ -586,7 +666,7 @@ mod tests {
             "/config.yaml",
             "--dry-run",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         let expected_config_uri = Uri::from_str("file:///config.yaml").unwrap();
         assert!(matches!(
             command,
@@ -613,7 +693,7 @@ mod tests {
             "--config",
             "/config.yaml",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Tool(ToolCliCommand::Merge(MergeArgs {

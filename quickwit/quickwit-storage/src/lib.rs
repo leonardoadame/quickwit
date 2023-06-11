@@ -49,6 +49,7 @@ mod payload;
 mod prefix_storage;
 mod ram_storage;
 mod split;
+mod storage_factory;
 mod storage_resolver;
 mod versioned_component;
 
@@ -73,22 +74,25 @@ pub use self::split::{SplitPayload, SplitPayloadBuilder};
 #[cfg(any(test, feature = "testsuite"))]
 pub use self::storage::MockStorage;
 #[cfg(any(test, feature = "testsuite"))]
-pub use self::storage_resolver::MockStorageFactory;
-pub use self::storage_resolver::{
-    quickwit_storage_uri_resolver, StorageFactory, StorageUriResolver,
-};
+pub use self::storage_factory::MockStorageFactory;
+pub use self::storage_factory::{StorageFactory, UnsupportedStorage};
+pub use self::storage_resolver::StorageResolver;
 #[cfg(feature = "testsuite")]
 pub use self::test_suite::{
     storage_test_multi_part_upload, storage_test_single_part_upload, storage_test_suite,
+    test_write_and_bulk_delete,
 };
 pub use crate::error::{StorageError, StorageErrorKind, StorageResolverError, StorageResult};
 
 /// Loads an entire local or remote file into memory.
-pub async fn load_file(uri: &Uri) -> anyhow::Result<OwnedBytes> {
+pub async fn load_file(
+    storage_resolver: &StorageResolver,
+    uri: &Uri,
+) -> anyhow::Result<OwnedBytes> {
     let parent = uri
         .parent()
         .ok_or_else(|| anyhow::anyhow!("URI `{uri}` is not a valid file URI."))?;
-    let storage = quickwit_storage_uri_resolver().resolve(&parent)?;
+    let storage = storage_resolver.resolve(&parent).await?;
     let file_name = uri
         .file_name()
         .ok_or_else(|| anyhow::anyhow!("URI `{uri}` is not a valid file URI."))?;
@@ -115,13 +119,19 @@ pub use for_test::storage_for_test;
 mod tests {
     use std::str::FromStr;
 
+    use quickwit_config::FileStorageConfig;
+
     use super::*;
 
     #[tokio::test]
     async fn test_load_file() {
+        let storage_resolver = StorageResolver::builder()
+            .register(LocalFileStorageFactory, FileStorageConfig::default().into())
+            .build()
+            .unwrap();
         let expected_bytes = tokio::fs::read_to_string("Cargo.toml").await.unwrap();
         assert_eq!(
-            load_file(&Uri::from_str("Cargo.toml").unwrap())
+            load_file(&storage_resolver, &Uri::from_str("Cargo.toml").unwrap())
                 .await
                 .unwrap()
                 .as_slice(),
@@ -144,7 +154,7 @@ pub(crate) mod test_suite {
             .get_slice(Path::new("missingfile"), 0..3)
             .await
             .map_err(|err| err.kind());
-        assert!(matches!(err, Err(StorageErrorKind::DoesNotExist)));
+        assert!(matches!(err, Err(StorageErrorKind::NotFound)));
         Ok(())
     }
 
@@ -173,7 +183,7 @@ pub(crate) mod test_suite {
 
     async fn test_write_and_cp(storage: &mut dyn Storage) -> anyhow::Result<()> {
         let test_path = Path::new("write_and_cp");
-        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz".as_ref();
+        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz";
         storage
             .put(test_path, Box::new(payload_bytes.to_vec()))
             .await?;
@@ -188,22 +198,27 @@ pub(crate) mod test_suite {
 
     async fn test_write_and_delete(storage: &mut dyn Storage) -> anyhow::Result<()> {
         let test_path = Path::new("write_and_delete");
-        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz".as_ref();
+        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz";
         storage
             .put(test_path, Box::new(payload_bytes.to_vec()))
             .await?;
+        assert!(storage.exists(test_path).await?);
         storage.delete(test_path).await?;
         assert!(!storage.exists(test_path).await?);
+        storage.delete(test_path).await?;
         Ok(())
     }
 
-    async fn test_write_and_bulk_delete(storage: &mut dyn Storage) -> anyhow::Result<()> {
+    /// Tests `Storage::bulk_delete`.
+    pub async fn test_write_and_bulk_delete(storage: &mut dyn Storage) -> anyhow::Result<()> {
         let test_paths = [
             Path::new("foo"),
             Path::new("bar"),
+            Path::new("qux"),
+            Path::new("baz"),
             Path::new("file-does-not-exist"),
         ];
-        for test_path in &test_paths[0..2] {
+        for test_path in &test_paths[0..4] {
             storage
                 .put(Path::new(test_path), Box::new(b"123".to_vec()))
                 .await?;
@@ -219,7 +234,7 @@ pub(crate) mod test_suite {
 
     async fn test_file_size(storage: &mut dyn Storage) -> anyhow::Result<()> {
         let test_path = Path::new("write_for_filesize");
-        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz".as_ref();
+        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz";
         storage
             .put(test_path, Box::new(payload_bytes.to_vec()))
             .await?;
@@ -250,7 +265,7 @@ pub(crate) mod test_suite {
         storage: &mut dyn Storage,
     ) -> anyhow::Result<()> {
         let test_path = Path::new("foo/bar/write_and_delete_with_separator");
-        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz".as_ref();
+        let payload_bytes = b"abcdefghijklmnopqrstuvwxyz";
         storage
             .put(test_path, Box::new(payload_bytes.to_vec()))
             .await?;

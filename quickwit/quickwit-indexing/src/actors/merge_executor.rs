@@ -30,14 +30,15 @@ use itertools::Itertools;
 use quickwit_actors::{Actor, ActorContext, ActorExitStatus, Handler, Mailbox, QueueCapacity};
 use quickwit_common::io::IoControls;
 use quickwit_common::runtimes::RuntimeType;
+use quickwit_common::temp_dir::TempDirectory;
 use quickwit_directories::UnionDirectory;
 use quickwit_doc_mapper::DocMapper;
 use quickwit_metastore::{Metastore, SplitMetadata};
 use quickwit_proto::metastore_api::DeleteTask;
-use quickwit_query::get_quickwit_tokenizer_manager;
 use quickwit_query::query_ast::QueryAst;
+use quickwit_query::{get_quickwit_fastfield_normalizer_manager, get_quickwit_tokenizer_manager};
 use tantivy::directory::{DirectoryClone, MmapDirectory, RamDirectory};
-use tantivy::{DateTime, Directory, Index, IndexMeta, SegmentId, SegmentReader};
+use tantivy::{Advice, DateTime, Directory, Index, IndexMeta, SegmentId, SegmentReader};
 use tokio::runtime::Handle;
 use tracing::{debug, info, instrument, warn};
 
@@ -45,8 +46,7 @@ use crate::actors::Packager;
 use crate::controlled_directory::ControlledDirectory;
 use crate::merge_policy::MergeOperationType;
 use crate::models::{
-    IndexedSplit, IndexedSplitBatch, IndexingPipelineId, MergeScratch, PublishLock,
-    ScratchDirectory, SplitAttrs,
+    IndexedSplit, IndexedSplitBatch, IndexingPipelineId, MergeScratch, PublishLock, SplitAttrs,
 };
 
 #[derive(Clone)]
@@ -286,7 +286,7 @@ impl MergeExecutor {
         merge_split_id: String,
         splits: Vec<SplitMetadata>,
         tantivy_dirs: Vec<Box<dyn Directory>>,
-        merge_scratch_directory: ScratchDirectory,
+        merge_scratch_directory: TempDirectory,
         ctx: &ActorContext<Self>,
     ) -> anyhow::Result<IndexedSplit> {
         let (union_index_meta, split_directories) = open_split_directories(&tantivy_dirs)?;
@@ -323,7 +323,7 @@ impl MergeExecutor {
         merge_split_id: String,
         split: SplitMetadata,
         tantivy_dirs: Vec<Box<dyn Directory>>,
-        merge_scratch_directory: ScratchDirectory,
+        merge_scratch_directory: TempDirectory,
         ctx: &ActorContext<Self>,
     ) -> anyhow::Result<Option<IndexedSplit>> {
         let delete_tasks = ctx
@@ -367,6 +367,7 @@ impl MergeExecutor {
         let mut merged_index = Index::open(controlled_directory.clone())?;
         ctx.record_progress();
         merged_index.set_tokenizers(get_quickwit_tokenizer_manager().clone());
+        merged_index.set_fast_field_tokenizers(get_quickwit_fastfield_normalizer_manager().clone());
 
         ctx.record_progress();
 
@@ -438,7 +439,10 @@ impl MergeExecutor {
 
         // This directory is here to receive the merged split, as well as the final meta.json file.
         let output_directory = ControlledDirectory::new(
-            Box::new(MmapDirectory::open(output_path)?),
+            Box::new(MmapDirectory::open_with_madvice(
+                output_path,
+                Advice::Sequential,
+            )?),
             self.io_controls
                 .clone()
                 .set_kill_switch(ctx.kill_switch().clone())
@@ -509,6 +513,7 @@ impl MergeExecutor {
 fn open_index<T: Into<Box<dyn Directory>>>(directory: T) -> tantivy::Result<Index> {
     let mut index = Index::open(directory)?;
     index.set_tokenizers(get_quickwit_tokenizer_manager().clone());
+    index.set_fast_field_tokenizers(get_quickwit_fastfield_normalizer_manager().clone());
     Ok(index)
 }
 
@@ -523,7 +528,7 @@ mod tests {
 
     use super::*;
     use crate::merge_policy::MergeOperation;
-    use crate::models::{IndexingPipelineId, ScratchDirectory};
+    use crate::models::IndexingPipelineId;
     use crate::{get_tantivy_directory_from_split_bundle, new_split_id, TestSandbox};
 
     #[tokio::test]
@@ -562,7 +567,7 @@ mod tests {
             .map(|split| split.split_metadata)
             .collect();
         assert_eq!(split_metas.len(), 4);
-        let merge_scratch_directory = ScratchDirectory::for_test();
+        let merge_scratch_directory = TempDirectory::for_test();
         let downloaded_splits_directory =
             merge_scratch_directory.named_temp_child("downloaded-splits-")?;
         let mut tantivy_dirs: Vec<Box<dyn Directory>> = Vec::new();
@@ -708,7 +713,7 @@ mod tests {
             .unwrap();
         let expected_uncompressed_docs_size_in_bytes =
             (new_split_metadata.uncompressed_docs_size_in_bytes as f32 / 2_f32) as u64;
-        let merge_scratch_directory = ScratchDirectory::for_test();
+        let merge_scratch_directory = TempDirectory::for_test();
         let downloaded_splits_directory =
             merge_scratch_directory.named_temp_child("downloaded-splits-")?;
         let split_filename = split_file(split_metadata.split_id());

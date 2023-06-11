@@ -28,7 +28,7 @@ pub mod test_suite {
     use futures::future::try_join_all;
     use itertools::Itertools;
     use quickwit_common::rand::append_random_suffix;
-    use quickwit_config::{IndexConfig, SourceConfig, SourceParams};
+    use quickwit_config::{IndexConfig, SourceConfig, SourceInputFormat, SourceParams};
     use quickwit_doc_mapper::tag_pruning::{no_tag, tag, TagFilterAst};
     use quickwit_proto::metastore_api::DeleteQuery;
     use quickwit_proto::{qast_helper, IndexUid};
@@ -108,6 +108,25 @@ pub mod test_suite {
 
         let error = metastore.create_index(index_config).await.unwrap_err();
         assert!(matches!(error, MetastoreError::IndexAlreadyExists { .. }));
+
+        cleanup_index(&metastore, index_uid).await;
+    }
+
+    pub async fn test_metastore_create_index_with_maximum_length<
+        MetastoreToTest: Metastore + DefaultForTest,
+    >() {
+        let metastore = MetastoreToTest::default_for_test().await;
+
+        let index_id =
+            append_random_suffix(format!("very-long-index-{}", "a".repeat(233)).as_str());
+        assert_eq!(index_id.len(), 255);
+        let index_uri = format!("ram:///indexes/{index_id}");
+
+        let index_config = IndexConfig::for_test(&index_id, &index_uri);
+
+        let index_uid = metastore.create_index(index_config.clone()).await.unwrap();
+
+        assert!(metastore.index_exists(&index_id).await.unwrap());
 
         cleanup_index(&metastore, index_uid).await;
     }
@@ -255,6 +274,7 @@ pub mod test_suite {
             enabled: true,
             source_params: SourceParams::void(),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
 
         assert_eq!(
@@ -325,6 +345,7 @@ pub mod test_suite {
             enabled: true,
             source_params: SourceParams::void(),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
         metastore
             .add_source(index_uid.clone(), source.clone())
@@ -369,6 +390,7 @@ pub mod test_suite {
             enabled: true,
             source_params: SourceParams::void(),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
 
         let index_config = IndexConfig::for_test(&index_id, index_uri.as_str());
@@ -446,6 +468,7 @@ pub mod test_suite {
                 enabled: true,
                 source_params: SourceParams::void(),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             };
             metastore
                 .add_source(index_uid.clone(), source.clone())
@@ -2659,6 +2682,12 @@ macro_rules! metastore_test_suite {
             async fn test_metastore_create_index() {
                 let _ = tracing_subscriber::fmt::try_init();
                 crate::tests::test_suite::test_metastore_create_index::<$metastore_type>().await;
+            }
+
+            #[tokio::test]
+            async fn test_metastore_create_index_with_maximum_length() {
+                let _ = tracing_subscriber::fmt::try_init();
+                crate::tests::test_suite::test_metastore_create_index_with_maximum_length::<$metastore_type>().await;
             }
 
             #[tokio::test]

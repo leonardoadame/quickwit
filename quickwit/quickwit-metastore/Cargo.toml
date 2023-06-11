@@ -1,6 +1,6 @@
 [package]
 name = "quickwit-metastore"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Quickwit, Inc. <hello@quickwit.io>"]
 edition = "2021"
 license = "AGPL-3.0-or-later"                           # For a commercial, license, contact hello@quickwit.io
@@ -33,11 +33,9 @@ tracing = { workspace = true }
 utoipa = { workspace = true }
 ulid = { workspace = true, features = ["serde"] }
 
-quickwit-cluster = { workspace = true }
 quickwit-common = { workspace = true }
 quickwit-config = { workspace = true }
 quickwit-doc-mapper = { workspace = true }
-quickwit-grpc-clients = { workspace = true }
 quickwit-proto = { workspace = true }
 quickwit-storage = { workspace = true }
 
@@ -52,7 +50,6 @@ tempfile = { workspace = true }
 
 quickwit-config = { workspace = true, features = ["testsuite"] }
 quickwit-doc-mapper = { workspace = true, features = ["testsuite"] }
-quickwit-grpc-clients = { workspace = true, features = ["testsuite"] }
 quickwit-storage = { workspace = true, features = ["testsuite"] }
 
 [features]

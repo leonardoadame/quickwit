@@ -1,6 +1,6 @@
 [package]
 name = "quickwit-actors"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Quickwit, Inc. <hello@quickwit.io>"]
 edition = "2021"
 license = "MIT"
@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 flume = { workspace = true }
 futures = { workspace = true }
+once_cell = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -38,18 +38,33 @@ mod not_nan_f32;
 
 pub use elastic_query_dsl::{ElasticQueryDsl, OneFieldMap};
 pub use error::InvalidQuery;
-pub use json_literal::JsonLiteral;
+pub use json_literal::{InterpretUserInput, JsonLiteral};
 pub(crate) use not_nan_f32::NotNaNf32;
 pub use query_ast::utils::find_field_or_hit_dynamic;
 use serde::{Deserialize, Serialize};
 pub use tantivy::query::Query as TantivyQuery;
-pub use tokenizers::get_quickwit_tokenizer_manager;
+pub use tokenizers::{get_quickwit_fastfield_normalizer_manager, get_quickwit_tokenizer_manager};
 
 #[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, Eq, PartialEq)]
-pub enum DefaultOperator {
+pub enum BooleanOperand {
     #[serde(alias = "AND")]
     And,
     #[default]
     #[serde(alias = "OR")]
     Or,
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum MatchAllOrNone {
+    #[serde(rename = "none")]
+    #[default]
+    MatchNone,
+    #[serde(rename = "all")]
+    MatchAll,
+}
+
+impl MatchAllOrNone {
+    pub fn is_none(&self) -> bool {
+        self == &MatchAllOrNone::MatchNone
+    }
 }

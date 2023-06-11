@@ -18,32 +18,30 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 use std::collections::HashMap;
-use std::fmt::{self};
-use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::{env, fmt, io};
 
+use anyhow::anyhow;
 use async_trait::async_trait;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
+use aws_sdk_s3::operation::get_object::{GetObjectError, GetObjectOutput};
+use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart, Delete, ObjectIdentifier};
+use aws_sdk_s3::Client as S3Client;
+use aws_smithy_http::byte_stream::ByteStream;
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures::{stream, StreamExt};
-use once_cell::sync::OnceCell;
-use quickwit_aws::error::RusotoErrorWrapper;
-use quickwit_aws::get_http_client;
-use quickwit_aws::region::sniff_aws_region_and_cache;
+use once_cell::sync::{Lazy, OnceCell};
+use quickwit_aws::get_aws_config;
 use quickwit_aws::retry::{retry, Retry, RetryParams, Retryable};
 use quickwit_common::uri::Uri;
 use quickwit_common::{chunk_range, into_u64_range};
+use quickwit_config::S3StorageConfig;
 use regex::Regex;
-use rusoto_core::{ByteStream, Region, RusotoError};
-use rusoto_s3::{
-    AbortMultipartUploadRequest, CompleteMultipartUploadRequest, CompletedMultipartUpload,
-    CompletedPart, CreateMultipartUploadError, CreateMultipartUploadRequest, Delete,
-    DeleteObjectRequest, DeleteObjectsRequest, GetObjectRequest, HeadObjectError,
-    HeadObjectRequest, ListObjectsV2Request, ObjectIdentifier, PutObjectError, PutObjectRequest,
-    S3Client, UploadPartRequest, S3,
-};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
-use tracing::{instrument, warn};
+use tokio::sync::Semaphore;
+use tracing::{info, instrument, warn};
 
 use crate::object_storage::MultiPartPolicy;
 use crate::storage::{BulkDeleteError, DeleteFailure, SendableAsync};
@@ -52,7 +50,18 @@ use crate::{
     STORAGE_METRICS,
 };
 
-/// S3 Compatible object storage implementation.
+/// Semaphore to limit the number of concurent requests to the object store. Some object stores
+/// (R2, SeaweedFs...) return errors when too many concurent requests are emitted.
+static REQUEST_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| {
+    let num_permits: usize = env::var("QW_S3_MAX_CONCURRENCY")
+        .as_deref()
+        .unwrap_or("10000")
+        .parse()
+        .expect("QW_S3_MAX_CONCURRENCY value should be a number.");
+    Semaphore::new(num_permits)
+});
+
+/// S3-compatible object storage implementation.
 pub struct S3CompatibleObjectStorage {
     s3_client: S3Client,
     uri: Uri,
@@ -60,6 +69,7 @@ pub struct S3CompatibleObjectStorage {
     prefix: PathBuf,
     multipart_policy: MultiPartPolicy,
     retry_params: RetryParams,
+    disable_multi_object_delete_requests: bool,
 }
 
 impl fmt::Debug for S3CompatibleObjectStorage {
@@ -72,77 +82,75 @@ impl fmt::Debug for S3CompatibleObjectStorage {
     }
 }
 
-fn create_s3_client(region: Region) -> anyhow::Result<S3Client> {
-    let http_client = get_http_client();
-    let credentials_provider = quickwit_aws::get_credentials_provider()?;
-    Ok(S3Client::new_with(
-        http_client,
-        credentials_provider,
-        region,
-    ))
+async fn create_s3_client(s3_storage_config: &S3StorageConfig) -> S3Client {
+    let aws_config = get_aws_config().await;
+    let mut s3_config = aws_sdk_s3::Config::builder().region(aws_config.region().cloned());
+
+    s3_config.set_retry_config(aws_config.retry_config().cloned());
+    s3_config.set_credentials_provider(aws_config.credentials_provider().cloned());
+    s3_config.set_http_connector(aws_config.http_connector().cloned());
+    s3_config.set_timeout_config(aws_config.timeout_config().cloned());
+    s3_config.set_credentials_cache(aws_config.credentials_cache().cloned());
+    s3_config.set_sleep_impl(Some(Arc::new(quickwit_aws::TokioSleep::default())));
+    s3_config.set_force_path_style(s3_storage_config.force_path_style_access());
+
+    if let Some(endpoint) = s3_storage_config.endpoint() {
+        info!(endpoint=%endpoint, "Using custom S3 endpoint.");
+        s3_config.set_endpoint_url(Some(endpoint));
+    }
+    S3Client::from_conf(s3_config.build())
 }
 
 impl S3CompatibleObjectStorage {
     /// Creates an object storage given a region and a bucket name.
-    pub fn new(
-        region: Region,
+    pub async fn new(
+        s3_storage_config: &S3StorageConfig,
         uri: Uri,
         bucket: String,
-    ) -> anyhow::Result<S3CompatibleObjectStorage> {
-        let s3_client = create_s3_client(region)?;
+    ) -> Result<Self, StorageResolverError> {
+        let s3_client = create_s3_client(s3_storage_config).await;
         let retry_params = RetryParams {
             max_attempts: 3,
             ..Default::default()
         };
-        Ok(S3CompatibleObjectStorage {
+        Ok(Self {
             s3_client,
             uri,
             bucket,
             prefix: PathBuf::new(),
             multipart_policy: MultiPartPolicy::default(),
             retry_params,
+            disable_multi_object_delete_requests: s3_storage_config
+                .disable_multi_object_delete_requests,
         })
     }
 
     /// Creates an object storage given a region and an uri.
-    pub fn from_uri(uri: &Uri) -> Result<S3CompatibleObjectStorage, StorageResolverError> {
-        let region = sniff_aws_region_and_cache().map_err(|err| {
-            StorageResolverError::FailedToOpenStorage {
-                kind: StorageErrorKind::Service,
-                message: err.to_string(),
-            }
-        })?;
-        Self::from_region_and_uri(region, uri)
-    }
-
-    /// Creates an object storage given a region and an uri.
-    pub fn from_region_and_uri(
-        region: Region,
+    pub async fn from_uri(
+        s3_storage_config: &S3StorageConfig,
         uri: &Uri,
-    ) -> Result<S3CompatibleObjectStorage, StorageResolverError> {
-        let (bucket, path) = parse_s3_uri(uri).ok_or_else(|| StorageResolverError::InvalidUri {
-            message: format!("URI `{uri}` is not a valid AWS S3 URI."),
+    ) -> Result<Self, StorageResolverError> {
+        let (bucket, prefix) = parse_s3_uri(uri).ok_or_else(|| {
+            let message = format!("Failed to extract bucket name from S3 URI: {uri}");
+            StorageResolverError::InvalidUri(message)
         })?;
-        let s3_compatible_storage = S3CompatibleObjectStorage::new(region, uri.clone(), bucket)
-            .map_err(|err| StorageResolverError::FailedToOpenStorage {
-                kind: StorageErrorKind::Service,
-                message: err.to_string(),
-            })?;
-        Ok(s3_compatible_storage.with_prefix(&path))
+        let storage = Self::new(s3_storage_config, uri.clone(), bucket).await?;
+        Ok(storage.with_prefix(prefix))
     }
 
     /// Sets a specific for all buckets.
     ///
     /// This method overrides any existing prefix. (It does NOT
     /// append the argument to any existing prefix.)
-    pub fn with_prefix(self, prefix: &Path) -> Self {
+    pub fn with_prefix(self, prefix: PathBuf) -> Self {
         Self {
             s3_client: self.s3_client,
             uri: self.uri,
             bucket: self.bucket,
-            prefix: prefix.to_path_buf(),
+            prefix,
             multipart_policy: self.multipart_policy,
             retry_params: self.retry_params,
+            disable_multi_object_delete_requests: self.disable_multi_object_delete_requests,
         }
     }
 
@@ -156,23 +164,21 @@ impl S3CompatibleObjectStorage {
 
 pub fn parse_s3_uri(uri: &Uri) -> Option<(String, PathBuf)> {
     static S3_URI_PTN: OnceCell<Regex> = OnceCell::new();
-    S3_URI_PTN
+
+    let captures = S3_URI_PTN
         .get_or_init(|| {
             // s3://bucket/path/to/object
-            Regex::new(r"s3(\+[^:]+)?://(?P<bucket>[^/]+)(/(?P<path>.+))?").unwrap()
+            Regex::new(r"s3(\+[^:]+)?://(?P<bucket>[^/]+)(/(?P<prefix>.+))?")
+                .expect("The regular expression should compile.")
         })
-        .captures(uri.as_str())
-        .and_then(|cap| {
-            cap.name("bucket").map(|bucket_match| {
-                (
-                    bucket_match.as_str().to_string(),
-                    cap.name("path").map_or_else(
-                        || PathBuf::from(""),
-                        |path_match| PathBuf::from(path_match.as_str()),
-                    ),
-                )
-            })
-        })
+        .captures(uri.as_str())?;
+
+    let bucket = captures.name("bucket")?.as_str().to_string();
+    let prefix = captures
+        .name("prefix")
+        .map(|prefix_match| PathBuf::from(prefix_match.as_str()))
+        .unwrap_or_default();
+    Some((bucket, prefix))
 }
 
 #[derive(Clone, Debug)]
@@ -222,23 +228,35 @@ impl S3CompatibleObjectStorage {
 
     async fn put_single_part_single_try<'a>(
         &'a self,
+        bucket: &'a str,
         key: &'a str,
         payload: Box<dyn crate::PutPayload>,
         len: u64,
-    ) -> Result<(), RusotoErrorWrapper<PutObjectError>> {
-        let body = payload.byte_stream().await?;
-        let request = PutObjectRequest {
-            bucket: self.bucket.clone(),
-            key: key.to_string(),
-            body: Some(body),
-            content_length: Some(len as i64),
-            ..Default::default()
-        };
+    ) -> Result<(), Retry<StorageError>> {
+        let body = payload
+            .byte_stream()
+            .await
+            .map_err(|io_error| Retry::Permanent(StorageError::from(io_error)))?;
+        self.s3_client
+            .put_object()
+            .bucket(bucket)
+            .key(key)
+            .body(body)
+            .content_length(len as i64)
+            .send()
+            .await
+            .map_err(|sdk_error| {
+                if sdk_error.is_retryable() {
+                    Retry::Transient(StorageError::from(sdk_error))
+                } else {
+                    Retry::Permanent(StorageError::from(sdk_error))
+                }
+            })?;
+
         crate::STORAGE_METRICS.object_storage_put_parts.inc();
         crate::STORAGE_METRICS
             .object_storage_upload_num_bytes
             .inc_by(len);
-        self.s3_client.put_object(request).await?;
         Ok(())
     }
 
@@ -248,33 +266,30 @@ impl S3CompatibleObjectStorage {
         payload: Box<dyn crate::PutPayload>,
         len: u64,
     ) -> StorageResult<()> {
+        let bucket = &self.bucket;
         retry(&self.retry_params, || async {
-            self.put_single_part_single_try(key, payload.clone(), len)
+            self.put_single_part_single_try(bucket, key, payload.clone(), len)
                 .await
         })
-        .await?;
+        .await
+        .map_err(|error| error.into_inner())?;
         Ok(())
     }
 
-    async fn create_multipart_upload(
-        &self,
-        key: &str,
-    ) -> Result<MultipartUploadId, RusotoErrorWrapper<CreateMultipartUploadError>> {
-        let create_upload_req = CreateMultipartUploadRequest {
-            bucket: self.bucket.clone(),
-            key: key.to_string(),
-            ..Default::default()
-        };
+    async fn create_multipart_upload(&self, key: &str) -> StorageResult<MultipartUploadId> {
         let upload_id = retry(&self.retry_params, || async {
             self.s3_client
-                .create_multipart_upload(create_upload_req.clone())
+                .create_multipart_upload()
+                .bucket(self.bucket.clone())
+                .key(key)
+                .send()
                 .await
-                .map_err(RusotoErrorWrapper::from)
         })
         .await?
         .upload_id
         .ok_or_else(|| {
-            RusotoError::ParseError("The returned multipart upload id was null.".to_string())
+            StorageErrorKind::InternalError
+                .with_error(anyhow!("The returned multipart upload id was null."))
         })?;
         Ok(MultipartUploadId(upload_id))
     }
@@ -322,36 +337,36 @@ impl S3CompatibleObjectStorage {
             .map_err(StorageError::from)
             .map_err(Retry::Permanent)?;
         let md5 = BASE64_STANDARD.encode(part.md5.0);
-        let upload_part_req = UploadPartRequest {
-            bucket: self.bucket.clone(),
-            key: key.to_string(),
-            body: Some(byte_stream),
-            content_length: Some(part.len() as i64),
-            content_md5: Some(md5),
-            part_number: part.part_number as i64,
-            upload_id: upload_id.0,
-            ..Default::default()
-        };
         crate::STORAGE_METRICS.object_storage_put_parts.inc();
         crate::STORAGE_METRICS
             .object_storage_upload_num_bytes
             .inc_by(part.len());
+
         let upload_part_output = self
             .s3_client
-            .upload_part(upload_part_req)
+            .upload_part()
+            .bucket(self.bucket.clone())
+            .key(key)
+            .body(byte_stream)
+            .content_length(part.len() as i64)
+            .content_md5(md5)
+            .part_number(part.part_number as i32)
+            .upload_id(upload_id.0)
+            .send()
             .await
-            .map_err(RusotoErrorWrapper::from)
-            .map_err(|rusoto_err| {
-                if rusoto_err.is_retryable() {
-                    Retry::Transient(StorageError::from(rusoto_err))
+            .map_err(|s3_err| {
+                if s3_err.is_retryable() {
+                    Retry::Transient(StorageError::from(s3_err))
                 } else {
-                    Retry::Permanent(StorageError::from(rusoto_err))
+                    Retry::Permanent(StorageError::from(s3_err))
                 }
             })?;
-        Ok(CompletedPart {
-            e_tag: upload_part_output.e_tag,
-            part_number: Some(part.part_number as i64),
-        })
+
+        let completed_part = CompletedPart::builder()
+            .set_e_tag(upload_part_output.e_tag().map(|tag| tag.to_string()))
+            .part_number(part.part_number as i32)
+            .build();
+        Ok(completed_part)
     }
 
     async fn put_multi_part<'a>(
@@ -361,14 +376,11 @@ impl S3CompatibleObjectStorage {
         part_len: u64,
         total_len: u64,
     ) -> StorageResult<()> {
-        let upload_id = self
-            .create_multipart_upload(key)
-            .await
-            .map_err(RusotoErrorWrapper::from)?;
+        let upload_id = self.create_multipart_upload(key).await?;
         let parts = self
             .create_multipart_requests(payload.clone(), total_len, part_len)
             .await?;
-        let max_concurrent_upload = self.multipart_policy.max_concurrent_upload();
+        let max_concurrent_upload = self.multipart_policy.max_concurrent_uploads();
         let completed_parts_res: StorageResult<Vec<CompletedPart>> =
             stream::iter(parts.into_iter().map(|part| {
                 let payload = payload.clone();
@@ -409,57 +421,55 @@ impl S3CompatibleObjectStorage {
         completed_parts: Vec<CompletedPart>,
         upload_id: &str,
     ) -> StorageResult<()> {
-        let completed_upload = CompletedMultipartUpload {
-            parts: Some(completed_parts),
-        };
-        let complete_upload_req = CompleteMultipartUploadRequest {
-            bucket: self.bucket.clone(),
-            key: key.to_string(),
-            multipart_upload: Some(completed_upload),
-            upload_id: upload_id.to_string(),
-            ..Default::default()
-        };
+        let completed_upload = CompletedMultipartUpload::builder()
+            .set_parts(Some(completed_parts))
+            .build();
         retry(&self.retry_params, || async {
             self.s3_client
-                .complete_multipart_upload(complete_upload_req.clone())
+                .complete_multipart_upload()
+                .bucket(self.bucket.clone())
+                .key(key)
+                .multipart_upload(completed_upload.clone())
+                .upload_id(upload_id)
+                .send()
                 .await
-                .map_err(RusotoErrorWrapper::from)
         })
         .await?;
         Ok(())
     }
 
     async fn abort_multipart_upload(&self, key: &str, upload_id: &str) -> StorageResult<()> {
-        let abort_upload_req = AbortMultipartUploadRequest {
-            bucket: self.bucket.clone(),
-            key: key.to_string(),
-            upload_id: upload_id.to_string(),
-            ..Default::default()
-        };
         retry(&self.retry_params, || async {
             self.s3_client
-                .abort_multipart_upload(abort_upload_req.clone())
+                .abort_multipart_upload()
+                .bucket(self.bucket.clone())
+                .key(key)
+                .upload_id(upload_id)
+                .send()
                 .await
-                .map_err(RusotoErrorWrapper::from)
         })
         .await?;
         Ok(())
     }
 
-    fn create_get_object_request(
+    async fn create_get_object_request(
         &self,
         path: &Path,
         range_opt: Option<Range<usize>>,
-    ) -> GetObjectRequest {
+    ) -> Result<GetObjectOutput, SdkError<GetObjectError>> {
         let key = self.key(path);
         let range_str = range_opt.map(|range| format!("bytes={}-{}", range.start, range.end - 1));
         crate::STORAGE_METRICS.object_storage_get_total.inc();
-        GetObjectRequest {
-            bucket: self.bucket.clone(),
-            key,
-            range: range_str,
-            ..Default::default()
-        }
+
+        let get_object_output = self
+            .s3_client
+            .get_object()
+            .bucket(self.bucket.clone())
+            .key(key)
+            .set_range(range_str)
+            .send()
+            .await?;
+        Ok(get_object_output)
     }
 
     async fn get_to_vec(
@@ -468,105 +478,57 @@ impl S3CompatibleObjectStorage {
         range_opt: Option<Range<usize>>,
     ) -> StorageResult<Vec<u8>> {
         let cap = range_opt.as_ref().map(Range::len).unwrap_or(0);
-        let get_object_req = self.create_get_object_request(path, range_opt);
-        let get_object_output = retry(&self.retry_params, || async {
-            self.s3_client
-                .get_object(get_object_req.clone())
-                .await
-                .map_err(RusotoErrorWrapper::from)
+        let get_object_output = retry(&self.retry_params, || {
+            self.create_get_object_request(path, range_opt.clone())
         })
         .await?;
-        let body = get_object_output.body.ok_or_else(|| {
-            StorageErrorKind::Service.with_error(anyhow::anyhow!("Returned object body was empty."))
-        })?;
         let mut buf: Vec<u8> = Vec::with_capacity(cap);
-        download_all(body, &mut buf).await?;
+        download_all(get_object_output.body, &mut buf).await?;
         Ok(buf)
     }
-}
 
-async fn download_all(byte_stream: ByteStream, output: &mut Vec<u8>) -> io::Result<()> {
-    output.clear();
-    let mut body_stream_reader = BufReader::new(byte_stream.into_async_read());
-    let num_bytes_copied = tokio::io::copy_buf(&mut body_stream_reader, output).await?;
-    STORAGE_METRICS
-        .object_storage_download_num_bytes
-        .inc_by(num_bytes_copied);
-    // When calling `get_all`, the Vec capacity is not properly set.
-    output.shrink_to_fit();
-    Ok(())
-}
+    /// Bulk delete implementation based on the DeleteObject API:
+    /// <https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html>
+    async fn bulk_delete_single<'a>(&self, paths: &[&'a Path]) -> Result<(), BulkDeleteError> {
+        let mut successes = Vec::with_capacity(paths.len());
+        let mut failures = HashMap::new();
 
-#[async_trait]
-impl Storage for S3CompatibleObjectStorage {
-    async fn check_connectivity(&self) -> anyhow::Result<()> {
-        self.s3_client
-            .list_objects_v2(ListObjectsV2Request {
-                bucket: self.bucket.clone(),
-                max_keys: Some(1),
+        let futures = paths
+            .iter()
+            .map(|path| async move {
+                let delete_res = self.delete(path).await;
+                (path, delete_res)
+            })
+            .collect::<Vec<_>>();
+        let mut stream = futures::stream::iter(futures).buffer_unordered(100);
+
+        while let Some((path, delete_res)) = stream.next().await {
+            match delete_res {
+                Ok(_) => successes.push(path.to_path_buf()),
+                Err(error) => {
+                    let failure = DeleteFailure {
+                        error: Some(error),
+                        ..Default::default()
+                    };
+                    failures.insert(path.to_path_buf(), failure);
+                }
+            };
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(BulkDeleteError {
+                successes,
+                failures,
                 ..Default::default()
             })
-            .await?;
-        Ok(())
-    }
-
-    async fn put(
-        &self,
-        path: &Path,
-        payload: Box<dyn crate::PutPayload>,
-    ) -> crate::StorageResult<()> {
-        crate::STORAGE_METRICS.object_storage_put_total.inc();
-        let key = self.key(path);
-        let total_len = payload.len();
-        let part_num_bytes = self.multipart_policy.part_num_bytes(total_len);
-        if part_num_bytes >= total_len {
-            self.put_single_part(&key, payload, total_len).await?;
-        } else {
-            self.put_multi_part(&key, payload, part_num_bytes, total_len)
-                .await?;
         }
-        Ok(())
     }
 
-    async fn copy_to(&self, path: &Path, output: &mut dyn SendableAsync) -> StorageResult<()> {
-        let get_object_req = self.create_get_object_request(path, None);
-        let get_object_output = retry(&self.retry_params, || async {
-            self.s3_client
-                .get_object(get_object_req.clone())
-                .await
-                .map_err(RusotoErrorWrapper::from)
-        })
-        .await?;
-        let body = get_object_output.body.ok_or_else(|| {
-            StorageErrorKind::Service.with_error(anyhow::anyhow!("Returned object body was empty."))
-        })?;
-        let mut body_read = BufReader::new(body.into_async_read());
-        let num_bytes_copied = tokio::io::copy_buf(&mut body_read, output).await?;
-        STORAGE_METRICS
-            .object_storage_download_num_bytes
-            .inc_by(num_bytes_copied);
-        output.flush().await?;
-        Ok(())
-    }
-
-    async fn delete(&self, path: &Path) -> StorageResult<()> {
-        let key = self.key(path);
-        let delete_object_req = DeleteObjectRequest {
-            bucket: self.bucket.clone(),
-            key,
-            ..Default::default()
-        };
-        retry(&self.retry_params, || async {
-            self.s3_client
-                .delete_object(delete_object_req.clone())
-                .await
-                .map_err(RusotoErrorWrapper::from)
-        })
-        .await?;
-        Ok(())
-    }
-
-    async fn bulk_delete<'a>(&self, paths: &[&'a Path]) -> Result<(), BulkDeleteError> {
+    /// Bulk delete implementation based on the DeleteObjects API, also called Multi-Object Delete
+    /// API: <https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObjects.html>
+    async fn bulk_delete_multi<'a>(&self, paths: &[&'a Path]) -> Result<(), BulkDeleteError> {
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
         let mut error = None;
         let mut successes = Vec::with_capacity(paths.len());
         let mut failures = HashMap::new();
@@ -585,25 +547,16 @@ impl Storage for S3CompatibleObjectStorage {
             }
             let objects: Vec<ObjectIdentifier> = chunk
                 .iter()
-                .map(|path| ObjectIdentifier {
-                    key: self.key(path),
-                    ..Default::default()
-                })
+                .map(|path| ObjectIdentifier::builder().key(self.key(path)).build())
                 .collect();
-            let delete = Delete {
-                objects,
-                ..Default::default()
-            };
-            let delete_objects_req = DeleteObjectsRequest {
-                bucket: self.bucket.clone(),
-                delete,
-                ..Default::default()
-            };
+            let delete = Delete::builder().set_objects(Some(objects)).build();
             let delete_objects_res = retry(&self.retry_params, || async {
                 self.s3_client
-                    .delete_objects(delete_objects_req.clone())
+                    .delete_objects()
+                    .bucket(self.bucket.clone())
+                    .delete(delete.clone())
+                    .send()
                     .await
-                    .map_err(RusotoErrorWrapper::from)
             })
             .await;
 
@@ -655,9 +608,100 @@ impl Storage for S3CompatibleObjectStorage {
             })
         }
     }
+}
+
+async fn download_all(byte_stream: ByteStream, output: &mut Vec<u8>) -> io::Result<()> {
+    output.clear();
+    let mut body_stream_reader = BufReader::new(byte_stream.into_async_read());
+    let num_bytes_copied = tokio::io::copy_buf(&mut body_stream_reader, output).await?;
+    STORAGE_METRICS
+        .object_storage_download_num_bytes
+        .inc_by(num_bytes_copied);
+    // When calling `get_all`, the Vec capacity is not properly set.
+    output.shrink_to_fit();
+    Ok(())
+}
+
+#[async_trait]
+impl Storage for S3CompatibleObjectStorage {
+    async fn check_connectivity(&self) -> anyhow::Result<()> {
+        // we ignore error as we never close the semaphore
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
+        self.s3_client
+            .list_objects_v2()
+            .bucket(self.bucket.clone())
+            .max_keys(1)
+            .send()
+            .await?;
+        Ok(())
+    }
+
+    async fn put(
+        &self,
+        path: &Path,
+        payload: Box<dyn crate::PutPayload>,
+    ) -> crate::StorageResult<()> {
+        crate::STORAGE_METRICS.object_storage_put_total.inc();
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
+        let key = self.key(path);
+        let total_len = payload.len();
+        let part_num_bytes = self.multipart_policy.part_num_bytes(total_len);
+        if part_num_bytes >= total_len {
+            self.put_single_part(&key, payload, total_len).await?;
+        } else {
+            self.put_multi_part(&key, payload, part_num_bytes, total_len)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn copy_to(&self, path: &Path, output: &mut dyn SendableAsync) -> StorageResult<()> {
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
+        let get_object_output = retry(&self.retry_params, || {
+            self.create_get_object_request(path, None)
+        })
+        .await?;
+        let mut body_read = BufReader::new(get_object_output.body.into_async_read());
+        let num_bytes_copied = tokio::io::copy_buf(&mut body_read, output).await?;
+        STORAGE_METRICS
+            .object_storage_download_num_bytes
+            .inc_by(num_bytes_copied);
+        output.flush().await?;
+        Ok(())
+    }
+
+    async fn delete(&self, path: &Path) -> StorageResult<()> {
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
+        let bucket = self.bucket.clone();
+        let key = self.key(path);
+        let delete_res = retry(&self.retry_params, || async {
+            self.s3_client
+                .delete_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
+                .await
+        })
+        .await;
+
+        match delete_res {
+            Ok(_) => Ok(()),
+            Err(error) if error.code() == Some("NoSuchKey") => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn bulk_delete<'a>(&self, paths: &[&'a Path]) -> Result<(), BulkDeleteError> {
+        if self.disable_multi_object_delete_requests {
+            self.bulk_delete_single(paths).await
+        } else {
+            self.bulk_delete_multi(paths).await
+        }
+    }
 
     #[instrument(level = "debug", skip(self, range), fields(range.start = range.start, range.end = range.end))]
     async fn get_slice(&self, path: &Path, range: Range<usize>) -> StorageResult<OwnedBytes> {
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
         self.get_to_vec(path, Some(range.clone()))
             .await
             .map(OwnedBytes::new)
@@ -673,6 +717,7 @@ impl Storage for S3CompatibleObjectStorage {
 
     #[instrument(level = "debug", skip(self), fields(num_bytes_fetched))]
     async fn get_all(&self, path: &Path) -> StorageResult<OwnedBytes> {
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
         let bytes = self
             .get_to_vec(path, None)
             .await
@@ -689,51 +734,20 @@ impl Storage for S3CompatibleObjectStorage {
     }
 
     async fn file_num_bytes(&self, path: &Path) -> StorageResult<u64> {
+        let _permit = REQUEST_SEMAPHORE.acquire().await;
+        let bucket = self.bucket.clone();
         let key = self.key(path);
-        let head_object_req = HeadObjectRequest {
-            bucket: self.bucket.clone(),
-            key,
-            ..Default::default()
-        };
-        let head_object_output_res = retry(&self.retry_params, || async {
+        let head_object_output = retry(&self.retry_params, || async {
             self.s3_client
-                .head_object(head_object_req.clone())
+                .head_object()
+                .bucket(&bucket)
+                .key(&key)
+                .send()
                 .await
-                .map_err(RusotoErrorWrapper::from)
         })
-        .await;
+        .await?;
 
-        match head_object_output_res {
-            Ok(head_object_output) => {
-                let content_length = head_object_output
-                    .content_length
-                    .and_then(|num_bytes| {
-                        if num_bytes >= 0 {
-                            Some(num_bytes as u64)
-                        } else {
-                            None
-                        }
-                    })
-                    .ok_or_else(|| {
-                        StorageErrorKind::Service.with_error(anyhow::anyhow!(
-                            "Head output did not contain a valid content length."
-                        ))
-                    })?;
-                Ok(content_length)
-            }
-            Err(RusotoErrorWrapper(RusotoError::Service(HeadObjectError::NoSuchKey(_)))) => {
-                Err(StorageErrorKind::DoesNotExist
-                    .with_error(anyhow::anyhow!("Missing key in S3 `{}`", path.display())))
-            }
-            // Also catching 404 until this issue is fixed: https://github.com/rusoto/rusoto/issues/716
-            Err(RusotoErrorWrapper(RusotoError::Unknown(http_resp))) if http_resp.status == 404 => {
-                Err(StorageErrorKind::DoesNotExist.with_error(anyhow::anyhow!(
-                    "S3 returned a 404 for key `{}`",
-                    path.display()
-                )))
-            }
-            Err(err) => Err(err.into()),
-        }
+        Ok(head_object_output.content_length() as u64)
     }
 
     fn uri(&self) -> &Uri {
@@ -746,11 +760,13 @@ mod tests {
 
     use std::path::PathBuf;
 
+    use aws_sdk_s3::config::{Credentials, Region};
+    use aws_sdk_s3::primitives::SdkBody;
+    use aws_smithy_client::test_connection::TestConnection;
+    use bytes::Bytes;
+    use hyper::{http, Body};
     use quickwit_common::chunk_range;
     use quickwit_common::uri::Uri;
-    use rusoto_mock::{
-        MockCredentialsProvider, MockRequestDispatcher, MultipleMockRequestDispatcher,
-    };
 
     use super::*;
     use crate::{MultiPartPolicy, S3CompatibleObjectStorage};
@@ -812,13 +828,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_s3_compatible_storage_relative_path() {
-        let s3_client = rusoto_s3::S3Client::new_with(
-            MockRequestDispatcher::default(),
-            MockCredentialsProvider,
-            Default::default(),
-        );
+    #[tokio::test]
+    async fn test_s3_compatible_storage_relative_path() {
+        let sdk_config = aws_config::load_from_env().await;
+        let s3_client = S3Client::new(&sdk_config);
         let uri = Uri::for_test("s3://bucket/indexes");
         let bucket = "bucket".to_string();
         let prefix = PathBuf::new();
@@ -830,6 +843,7 @@ mod tests {
             prefix,
             multipart_policy: MultiPartPolicy::default(),
             retry_params: RetryParams::default(),
+            disable_multi_object_delete_requests: false,
         };
         assert_eq!(
             s3_storage.relative_path("indexes/foo"),
@@ -845,42 +859,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_s3_compatible_storage_bulk_delete() {
-        let request_dispatcher = MultipleMockRequestDispatcher::new([
-            MockRequestDispatcher::with_status(200).with_body(
-                r#"
-                <?xml version="1.0" encoding="UTF-8"?>
-                <DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                    <Deleted>
-                        <Key>foo</Key>
-                    </Deleted>
-                    <Error>
-                        <Key>bar</Key>
-                        <Code>NoSuchKey</Code>
-                        <Message>The specified key does not exist</Message>
-                    </Error>
-                    <Error>
-                        <Key>baz</Key>
-                        <Code>AccessDenied</Code>
-                        <Message>Access Denied</Message>
-                    </Error>
-                </DeleteResult>"#,
+    async fn test_s3_compatible_storage_bulk_delete_single() {
+        let client = TestConnection::new(vec![
+            (
+                http::Request::builder()
+                    .body(SdkBody::from(Body::empty()))
+                    .unwrap(),
+                http::Response::builder()
+                    .body(SdkBody::from(Body::empty()))
+                    .unwrap(),
             ),
-            MockRequestDispatcher::with_status(400).with_body(r#"
-                <?xml version="1.0" encoding="UTF-8"?>
-                <Error>
-                    <Code>MalformedXML</Code>
-                    <Message>The XML you provided was not well-formed or did not validate against our published schema.</Message>
-                    <RequestId>264A17BF16E9E80A</RequestId>
-                    <HostId>P3xqrhuhYxlrefdw3rEzmJh8z5KDtGzb+/FB7oiQaScI9Yaxd8olYXc7d1111ab+</HostId>
-                </Error>"#
+            (
+                http::Request::builder()
+                    .body(SdkBody::from(Body::empty()))
+                    .unwrap(),
+                http::Response::builder()
+                    .body(SdkBody::from(Body::empty()))
+                    .unwrap(),
             ),
         ]);
-        let s3_client = rusoto_s3::S3Client::new_with(
-            request_dispatcher,
-            MockCredentialsProvider,
-            Default::default(),
-        );
+        let credentials = Credentials::new("mock_key", "mock_secret", None, None, "mock_provider");
+        let config = aws_sdk_s3::Config::builder()
+            .region(Some(Region::new("Foo")))
+            .http_connector(client.clone())
+            .credentials_provider(credentials)
+            .build();
+        let s3_client = S3Client::from_conf(config);
         let uri = Uri::for_test("s3://bucket/indexes");
         let bucket = "bucket".to_string();
         let prefix = PathBuf::new();
@@ -892,6 +896,134 @@ mod tests {
             prefix,
             multipart_policy: MultiPartPolicy::default(),
             retry_params: RetryParams::default(),
+            disable_multi_object_delete_requests: true,
+        };
+        let _ = s3_storage
+            .bulk_delete(&[Path::new("foo"), Path::new("bar")])
+            .await;
+
+        let requests = client.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0]
+            .actual
+            .uri()
+            .to_string()
+            .ends_with("DeleteObject"));
+    }
+
+    #[tokio::test]
+    async fn test_s3_compatible_storage_bulk_delete_multi() {
+        let client = TestConnection::new(vec![(
+            http::Request::builder()
+                .body(SdkBody::from(Body::empty()))
+                .unwrap(),
+            http::Response::builder()
+                .body(SdkBody::from(Body::empty()))
+                .unwrap(),
+        )]);
+        let credentials = Credentials::new("mock_key", "mock_secret", None, None, "mock_provider");
+        let config = aws_sdk_s3::Config::builder()
+            .region(Some(Region::new("Foo")))
+            .http_connector(client.clone())
+            .credentials_provider(credentials)
+            .build();
+        let s3_client = S3Client::from_conf(config);
+        let uri = Uri::for_test("s3://bucket/indexes");
+        let bucket = "bucket".to_string();
+        let prefix = PathBuf::new();
+
+        let s3_storage = S3CompatibleObjectStorage {
+            s3_client,
+            uri,
+            bucket,
+            prefix,
+            multipart_policy: MultiPartPolicy::default(),
+            retry_params: RetryParams::default(),
+            disable_multi_object_delete_requests: false,
+        };
+        let _ = s3_storage
+            .bulk_delete(&[Path::new("foo"), Path::new("bar")])
+            .await;
+
+        let requests = client.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0]
+            .actual
+            .uri()
+            .to_string()
+            .ends_with("DeleteObjects"));
+    }
+
+    #[tokio::test]
+    async fn test_s3_compatible_storage_bulk_delete_multi_errors() {
+        let client = TestConnection::new(vec![
+            (
+                // This is quite fragile, currently this is *not* validated by the SDK
+                // but may in future, that being said, there is no way to know what the
+                // request should look like until it raises an error in reality as this
+                // is up to how the validation is implemented.
+                http::Request::builder().body(SdkBody::from(Body::empty())).unwrap(),
+                http::Response::builder()
+                    .status(200)
+                    .body(SdkBody::from(Body::from(Bytes::from(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>
+                        <DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+                            <Deleted>
+                                <Key>foo</Key>
+                            </Deleted>
+                            <Error>
+                                <Key>bar</Key>
+                                <Code>NoSuchKey</Code>
+                                <Message>The specified key does not exist</Message>
+                            </Error>
+                            <Error>
+                                <Key>baz</Key>
+                                <Code>AccessDenied</Code>
+                                <Message>Access Denied</Message>
+                            </Error>
+                        </DeleteResult>"#
+                    ))))
+                    .unwrap()
+            ),
+            (
+                // This is quite fragile, currently this is *not* validated by the SDK
+                // but may in future, that being said, there is no way to know what the
+                // request should look like until it raises an error in reality as this
+                // is up to how the validation is implemented.
+                http::Request::builder().body(SdkBody::from(Body::empty())).unwrap(),
+                http::Response::builder()
+                    .status(400)
+                    .body(SdkBody::from(Body::from(Bytes::from(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>
+                        <Error>
+                            <Code>MalformedXML</Code>
+                            <Message>The XML you provided was not well-formed or did not validate against our published schema.</Message>
+                            <RequestId>264A17BF16E9E80A</RequestId>
+                            <HostId>P3xqrhuhYxlrefdw3rEzmJh8z5KDtGzb+/FB7oiQaScI9Yaxd8olYXc7d1111ab+</HostId>
+                        </Error>"#
+                    ))))
+                    .unwrap()
+            ),
+        ]);
+        let credentials = Credentials::new("mock_key", "mock_secret", None, None, "mock_provider");
+        let config = aws_sdk_s3::Config::builder()
+            .region(Some(Region::new("Foo")))
+            .http_connector(client)
+            .credentials_provider(credentials)
+            .build();
+        let s3_client = S3Client::from_conf(config);
+        let uri = Uri::for_test("s3://bucket/indexes");
+        let bucket = "bucket".to_string();
+        let prefix = PathBuf::new();
+
+        let s3_storage = S3CompatibleObjectStorage {
+            s3_client,
+            uri,
+            bucket,
+            prefix,
+            multipart_policy: MultiPartPolicy::default(),
+            retry_params: RetryParams::default(),
+            disable_multi_object_delete_requests: false,
         };
         let bulk_delete_error = s3_storage
             .bulk_delete(&[

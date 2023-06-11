@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-rust-version = "1.68"
+rust-version = "1.69"
 members = [
   "quickwit-actors",
   "quickwit-aws",
@@ -13,6 +13,7 @@ members = [
   "quickwit-control-plane",
   "quickwit-core",
   "quickwit-directories",
+  "quickwit-datetime",
   "quickwit-doc-mapper",
   "quickwit-grpc-clients",
   "quickwit-indexing",
@@ -35,7 +36,7 @@ members = [
 ]
 
 [profile.dev]
-debug = 0
+debug = false
 
 [workspace.dependencies]
 anyhow = "1"
@@ -44,24 +45,20 @@ assert-json-diff = "2"
 async-speed-limit = "0.4"
 async-trait = "0.1"
 atty = "0.2"
-azure_core = { version = "0.5.0", features = ["enable_reqwest_rustls"] }
-azure_storage = { version = "0.6.0", default-features = false, features = ["enable_reqwest_rustls"] }
-azure_storage_blobs = { version = "0.6.0", default-features = false, features = ["enable_reqwest_rustls"] }
 backoff = { version = "0.4", features = ["tokio"] }
 base64 = "0.21"
-byte-unit = { version = "4", default-features = false, features = ["serde"] }
+byte-unit = { version = "4", default-features = false, features = ["serde", "std"] }
 bytes = "1"
 chitchat = { git = "https://github.com/quickwit-oss/chitchat", rev = "bc29598" }
 chrono = { version = "0.4.23", default-features = false, features = ["clock", "std"] }
-clap = { version = "=3.1", features = ["env"] }
+clap = { version = "4.3.0", features = ["env", "string"] }
 colored = "2.0.0"
 console-subscriber = "0.1.8"
-criterion = { version = "0.4", features = ["async_tokio"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
 cron = "0.11.0"
 dialoguer = "0.10.3"
 dotenv = "0.15"
 dyn-clone = "1.0.10"
-ec2_instance_metadata = "0.3"
 enum-iterator = "1.4"
 env_logger = "0.9"
 fail = "0.5"
@@ -70,20 +67,22 @@ fnv = "1"
 futures = "0.3"
 futures-util = { version = "0.3.25", default-features = false }
 heck = "0.4.1"
+hex = "0.4.3"
 home = "0.5.4"
 hostname = "0.3"
 http = "0.2.9"
+http-serde = "1.1.2"
 humansize = "2.1.3"
 humantime = "2.1.0"
 hyper = { version = "0.14", features = [
-  "stream",
-  "server",
+  "client",
   "http1",
   "http2",
+  "server",
+  "stream",
   "tcp",
-  "client",
 ] }
-hyper-rustls = "0.23"
+hyper-rustls = "0.24"
 indexmap = { version = "1.9.2", features = ["serde"] }
 indicatif = "0.17.3"
 itertools = "0.10.5"
@@ -102,10 +101,10 @@ once_cell = "1"
 oneshot = "0.1.5"
 openssl = { version = "0.10.48", default-features = false }
 openssl-probe = "0.1.5"
-opentelemetry = { version = "0.18", features = ["rt-tokio"] }
-opentelemetry-jaeger = { version = "0.17", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.11.0"
-pin-project = "1.0.12"
+opentelemetry = { version = "0.19", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.18", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.12.0"
+pin-project = "1.1.0"
 pnet = { version = "0.31.0", features = ["std"] }
 postcard = { version = "1.0.4", features = ["use-std"], default-features = false}
 predicates = "2"
@@ -134,28 +133,12 @@ reqwest = { version = "0.11", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
-rusoto_core = { version = "0.48", default-features = false, features = [
-  "rustls",
-] }
-rusoto_kinesis = { version = "0.48", default-features = false, features = [
-  "rustls",
-] }
-rusoto_mock = { version = "0.48", default-features = false, features = [
-  "rustls",
-] }
-rusoto_s3 = { version = "0.48", default-features = false, features = [
-  "rustls",
-] }
-rusoto_sts = { version = "0.48", default-features = false, features = [
-  "rustls",
-] }
-rust-embed = "6.6.0"
+rust-embed = "6.7.0"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 serde_qs = { version = "0.10", features = ["warp"] }
 serde_with = "2.3.0"
 serde_yaml = "0.9"
-serial_test = "0.9.0"
 siphasher = "0.3"
 sqlx = { version = "0.6", features = [
   "runtime-tokio-rustls",
@@ -176,12 +159,12 @@ tokio = { version = "1.28", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["full"] }
 toml = "0.6.0"
-tonic = { version = "0.8.3", features = ["gzip"] }
-tonic-build = "0.8.4"
+tonic = { version = "0.9.0", features = ["gzip"] }
+tonic-build = "0.9.0"
 tower = { version = "0.4.13", features = ["balance", "buffer", "load", "util"] }
 tower-http = { version = "0.4.0", features = ["compression-gzip", "cors"] }
 tracing = "0.1.37"
-tracing-opentelemetry = "0.18.0"
+tracing-opentelemetry = "0.19.0"
 tracing-subscriber = { version = "0.3.16", features = [
   "time",
   "std",
@@ -195,36 +178,50 @@ uuid = { version = "1.3", features = ["v4", "serde"] }
 warp = "0.3"
 wiremock = "0.5"
 
-quickwit-actors = { version = "0.5.0", path = "./quickwit-actors" }
-quickwit-aws = { version = "0.5.0", path = "./quickwit-aws" }
-quickwit-cluster = { version = "0.5.0", path = "./quickwit-cluster" }
-quickwit-codegen = { version = "0.5.0", path = "./quickwit-codegen" }
-quickwit-codegen-example = { version = "0.5.0", path = "./quickwit-codegen/example" }
-quickwit-common = { version = "0.5.0", path = "./quickwit-common" }
-quickwit-config = { version = "0.5.0", path = "./quickwit-config" }
-quickwit-control-plane = { version = "0.5.0", path = "./quickwit-control-plane" }
-quickwit-core = { version = "0.5.0", path = "./quickwit-core" }
-quickwit-directories = { version = "0.5.0", path = "./quickwit-directories" }
-quickwit-doc-mapper = { version = "0.5.0", path = "./quickwit-doc-mapper" }
-quickwit-grpc-clients = { version = "0.5.0", path = "./quickwit-grpc-clients" }
-quickwit-indexing = { version = "0.5.0", path = "./quickwit-indexing" }
-quickwit-ingest = { version = "0.5.0", path = "./quickwit-ingest" }
-quickwit-integration-tests = { version = "0.5.0", path = "./quickwit-integration-tests" }
-quickwit-jaeger = { version = "0.5.0", path = "./quickwit-jaeger" }
-quickwit-janitor = { version = "0.5.0", path = "./quickwit-janitor" }
-quickwit-macros = { version = "0.5.0", path = "./quickwit-macros" }
-quickwit-macros-impl = { version = "0.5.0", path = "./quickwit-macros/impl" }
-quickwit-metastore = { version = "0.5.0", path = "./quickwit-metastore" }
-quickwit-opentelemetry = { version = "0.5.0", path = "./quickwit-opentelemetry" }
-quickwit-proto = { version = "0.5.0", path = "./quickwit-proto" }
-quickwit-query = { version = "0.5.0", path = "./quickwit-query" }
-quickwit-rest-client = { version = "0.5.0", path = "./quickwit-rest-client" }
-quickwit-search = { version = "0.5.0", path = "./quickwit-search" }
-quickwit-serve = { version = "0.5.0", path = "./quickwit-serve" }
-quickwit-storage = { version = "0.5.0", path = "./quickwit-storage" }
-quickwit-telemetry = { version = "0.5.0", path = "./quickwit-telemetry" }
+aws-config = "0.55.0"
+aws-sdk-kinesis = "0.27.0"
+aws-sdk-s3 = "0.27.0"
+aws-smithy-async = "0.55.0"
+aws-smithy-client = "0.55.0"
+aws-smithy-http = "0.55.0"
+aws-smithy-types = "0.55.0"
+aws-types = "0.55.0"
 
-tantivy = { git = "https://github.com/quickwit-oss/tantivy/", rev = "45ff0e3", default-features = false, features = [
+azure_core = { version = "0.5.0", features = ["enable_reqwest_rustls"] }
+azure_storage = { version = "0.6.0", default-features = false, features = ["enable_reqwest_rustls"] }
+azure_storage_blobs = { version = "0.6.0", default-features = false, features = ["enable_reqwest_rustls"] }
+
+quickwit-actors = { version = "0.6.0", path = "./quickwit-actors" }
+quickwit-aws = { version = "0.6.0", path = "./quickwit-aws" }
+quickwit-cluster = { version = "0.6.0", path = "./quickwit-cluster" }
+quickwit-codegen = { version = "0.6.0", path = "./quickwit-codegen" }
+quickwit-codegen-example = { version = "0.6.0", path = "./quickwit-codegen/example" }
+quickwit-common = { version = "0.6.0", path = "./quickwit-common" }
+quickwit-config = { version = "0.6.0", path = "./quickwit-config" }
+quickwit-control-plane = { version = "0.6.0", path = "./quickwit-control-plane" }
+quickwit-core = { version = "0.6.0", path = "./quickwit-core" }
+quickwit-datetime = { version = "0.6.0", path = "./quickwit-datetime" }
+quickwit-directories = { version = "0.6.0", path = "./quickwit-directories" }
+quickwit-doc-mapper = { version = "0.6.0", path = "./quickwit-doc-mapper" }
+quickwit-grpc-clients = { version = "0.6.0", path = "./quickwit-grpc-clients" }
+quickwit-indexing = { version = "0.6.0", path = "./quickwit-indexing" }
+quickwit-ingest = { version = "0.6.0", path = "./quickwit-ingest" }
+quickwit-integration-tests = { version = "0.6.0", path = "./quickwit-integration-tests" }
+quickwit-jaeger = { version = "0.6.0", path = "./quickwit-jaeger" }
+quickwit-janitor = { version = "0.6.0", path = "./quickwit-janitor" }
+quickwit-macros = { version = "0.6.0", path = "./quickwit-macros" }
+quickwit-macros-impl = { version = "0.6.0", path = "./quickwit-macros/impl" }
+quickwit-metastore = { version = "0.6.0", path = "./quickwit-metastore" }
+quickwit-opentelemetry = { version = "0.6.0", path = "./quickwit-opentelemetry" }
+quickwit-proto = { version = "0.6.0", path = "./quickwit-proto" }
+quickwit-query = { version = "0.6.0", path = "./quickwit-query" }
+quickwit-rest-client = { version = "0.6.0", path = "./quickwit-rest-client" }
+quickwit-search = { version = "0.6.0", path = "./quickwit-search" }
+quickwit-serve = { version = "0.6.0", path = "./quickwit-serve" }
+quickwit-storage = { version = "0.6.0", path = "./quickwit-storage" }
+quickwit-telemetry = { version = "0.6.0", path = "./quickwit-telemetry" }
+
+tantivy = { git = "https://github.com/quickwit-oss/tantivy/", rev = "7ee78bd", default-features = false, features = [
   "mmap",
   "lz4-compression",
   "zstd-compression",
@@ -256,8 +253,8 @@ vrl-stdlib = { git = "https://github.com/vectordotdev/vrl", rev = "v0.3.0", defa
   "decode_base16",
   "decode_base64",
   "decode_gzip",
-  "decode_percent",
   "decode_mime_q",
+  "decode_percent",
   "decode_zlib",
   "decode_zstd",
   "decrypt",
@@ -292,10 +289,10 @@ vrl-stdlib = { git = "https://github.com/vectordotdev/vrl", rev = "v0.3.0", defa
   "integer",
   "ip_aton",
   "ip_cidr_contains",
-  "ip_subnet",
   "ip_ntoa",
   "ip_ntop",
   "ip_pton",
+  "ip_subnet",
   "ip_to_ipv6",
   "ipv6_to_ipv4",
   "is_array",
@@ -326,10 +323,10 @@ vrl-stdlib = { git = "https://github.com/vectordotdev/vrl", rev = "v0.3.0", defa
   "mod",
   "now",
   "object",
+  "parse_apache_log",
   "parse_aws_alb_log",
   "parse_aws_cloudwatch_log_subscription_message",
   "parse_aws_vpc_flow_log",
-  "parse_apache_log",
   "parse_cef",
   "parse_common_log",
   "parse_csv",
@@ -374,15 +371,15 @@ vrl-stdlib = { git = "https://github.com/vectordotdev/vrl", rev = "v0.3.0", defa
   "strip_ansi_escape_codes",
   "strip_whitespace",
   "strlen",
+  "tag_types_externally",
   "tally",
   "tally_value",
-  "tag_types_externally",
   "timestamp",
   "to_bool",
   "to_float",
   "to_int",
-  "to_string",
   "to_regex",
+  "to_string",
   "to_syslog_facility",
   "to_syslog_level",
   "to_syslog_severity",

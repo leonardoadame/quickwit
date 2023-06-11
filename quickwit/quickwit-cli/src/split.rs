@@ -25,19 +25,17 @@ use colored::Colorize;
 use itertools::Itertools;
 use quickwit_common::GREEN_COLOR;
 use quickwit_metastore::{Split, SplitState};
-use quickwit_rest_client::rest_client::{QuickwitClient, Transport};
 use quickwit_serve::ListSplitsQueryParams;
-use reqwest::Url;
 use tabled::{Table, Tabled};
 use time::{format_description, Date, OffsetDateTime, PrimitiveDateTime};
 use tracing::debug;
 
-use crate::{cluster_endpoint_arg, make_table, prompt_confirmation};
+use crate::{client_args, make_table, prompt_confirmation, ClientArgs};
 
-pub fn build_split_command<'a>() -> Command<'a> {
+pub fn build_split_command() -> Command {
     Command::new("split")
         .about("Manages splits: lists, describes, marks for deletion...")
-        .arg(cluster_endpoint_arg())
+        .args(client_args())
         .subcommand(
             Command::new("list")
                 .about("Lists the splits of an index.")
@@ -49,7 +47,7 @@ pub fn build_split_command<'a>() -> Command<'a> {
                     arg!(--states <SPLIT_STATES> "Selects the splits whose states are included in this comma-separated list of states. Possible values are `staged`, `published`, and `marked`.")
                         .display_order(2)
                         .required(false)
-                        .use_value_delimiter(true),
+                        .value_delimiter(','),
                     arg!(--"create-date" <CREATE_DATE> "Selects the splits whose creation dates are before this date.")
                         .display_order(3)
                         .required(false),
@@ -59,11 +57,12 @@ pub fn build_split_command<'a>() -> Command<'a> {
                     arg!(--"end-date" <END_DATE> "Selects the splits that contain documents before this date (time-series indexes only).")
                         .display_order(5)
                         .required(false),
+                    // See #2762:
                     // arg!(--tags <TAGS> "Selects the splits whose tags are all included in this comma-separated list of tags.")
                     //     .display_order(6)
                     //     .required(false)
                     //     .use_value_delimiter(true),
-                    arg!(--"output-format" <OUTPUT_FORMAT> "Output format. Possible values are `table`, `json`, and `pretty_json`.")
+                    arg!(--"output-format" <OUTPUT_FORMAT> "Output format. Possible values are `table`, `json`, and `pretty-json`.")
                         .alias("format")
                         .display_order(7)
                         .required(false)
@@ -75,9 +74,11 @@ pub fn build_split_command<'a>() -> Command<'a> {
                 .alias("desc")
                 .args(&[
                     arg!(--index <INDEX> "ID of the target index")
-                        .display_order(1),
+                        .display_order(1)
+                        .required(true),
                     arg!(--split <SPLIT> "ID of the target split")
-                        .display_order(2),
+                        .display_order(2)
+                        .required(true),
                     arg!(--verbose "Displays additional metadata about the hotcache."),
                 ])
             )
@@ -92,7 +93,7 @@ pub fn build_split_command<'a>() -> Command<'a> {
                     arg!(--splits <SPLIT_IDS> "Comma-separated list of split IDs")
                         .display_order(2)
                         .required(true)
-                        .use_value_delimiter(true),
+                        .value_delimiter(','),
                     arg!(-y --"yes" "Assume \"yes\" as an answer to all prompts and run non-interactively.")
                         .required(false),
                 ])
@@ -112,12 +113,12 @@ impl FromStr for OutputFormat {
 
     fn from_str(output_format_str: &str) -> anyhow::Result<Self> {
         match output_format_str {
-            "table" => Ok(OutputFormat::Table),
             "json" => Ok(OutputFormat::Json),
-            "pretty_json" => Ok(OutputFormat::PrettyJson),
+            "pretty-json" | "pretty_json" => Ok(OutputFormat::PrettyJson),
+            "table" => Ok(OutputFormat::Table),
             _ => bail!(
-                "Failed to parse output format `{output_format_str}`. Supported formats are: \
-                 `table`, `json`, and `pretty_json`."
+                "Unkown output format `{output_format_str}`. Supported formats are: `table`, \
+                 `json`, and `pretty-json`."
             ),
         }
     }
@@ -125,7 +126,7 @@ impl FromStr for OutputFormat {
 
 #[derive(Debug, PartialEq)]
 pub struct ListSplitArgs {
-    pub cluster_endpoint: Url,
+    pub client_args: ClientArgs,
     pub index_id: String,
     pub split_states: Option<Vec<SplitState>>,
     pub create_date: Option<OffsetDateTime>,
@@ -137,7 +138,7 @@ pub struct ListSplitArgs {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct MarkForDeletionArgs {
-    pub cluster_endpoint: Url,
+    pub client_args: ClientArgs,
     pub index_id: String,
     pub split_ids: Vec<String>,
     pub assume_yes: bool,
@@ -145,7 +146,7 @@ pub struct MarkForDeletionArgs {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct DescribeSplitArgs {
-    pub cluster_endpoint: Url,
+    pub client_args: ClientArgs,
     pub index_id: String,
     pub split_id: String,
     pub verbose: bool,
@@ -159,67 +160,64 @@ pub enum SplitCliCommand {
 }
 
 impl SplitCliCommand {
-    pub fn parse_cli_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    pub fn parse_cli_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let (subcommand, submatches) = matches
-            .subcommand()
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse sub-matches."))?;
-        match subcommand {
+            .remove_subcommand()
+            .context("Failed to split subcommand.")?;
+        match subcommand.as_str() {
             "describe" => Self::parse_describe_args(submatches),
             "list" => Self::parse_list_args(submatches),
             "mark-for-deletion" => Self::parse_mark_for_deletion_args(submatches),
-            _ => bail!("Subcommand `{}` is not implemented.", subcommand),
+            _ => bail!("Unknown split subcommand `{subcommand}`."),
         }
     }
 
-    fn parse_list_args(matches: &ArgMatches) -> anyhow::Result<Self> {
-        let cluster_endpoint = matches
-            .value_of("endpoint")
-            .map(Url::from_str)
-            .expect("`endpoint` is a required arg.")?;
+    fn parse_list_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
+        let client_args = ClientArgs::parse(&mut matches)?;
         let index_id = matches
-            .value_of("index")
-            .map(String::from)
-            .expect("`index` is a required arg.");
+            .remove_one::<String>("index")
+            .expect("`index` should be a required arg.");
         let split_states = matches
-            .values_of("states")
+            .remove_many::<String>("states")
             .map(|values| {
                 values
                     .into_iter()
-                    .map(parse_split_state)
+                    .dedup()
+                    .map(|split_state_str| parse_split_state(&split_state_str))
                     .collect::<Result<Vec<_>, _>>()
             })
             .transpose()?;
         let create_date = matches
-            .value_of("create-date")
-            .map(|arg| parse_date(arg, "create"))
+            .remove_one::<String>("create-date")
+            .map(|date_str| parse_date(&date_str, "create"))
             .transpose()?;
         let start_date = matches
-            .value_of("start-date")
-            .map(|arg| parse_date(arg, "start"))
+            .remove_one::<String>("start-date")
+            .map(|date_str| parse_date(&date_str, "start"))
             .transpose()?;
         let end_date = matches
-            .value_of("end-date")
-            .map(|arg| parse_date(arg, "end"))
+            .remove_one::<String>("end-date")
+            .map(|date_str| parse_date(&date_str, "end"))
             .transpose()?;
         // let tags = matches.values_of("tags").map(|values| {
         //     TagFilterAst::And(
         //         values
         //             .into_iter()
         //             .map(|value| TagFilterAst::Tag {
-        //                 is_present: true,
+        //                 get_flag: true,
         //                 tag: value.to_string(),
         //             })
         //             .collect(),
         //     )
         // });
         let output_format = matches
-            .value_of("output-format")
-            .map(OutputFormat::from_str)
+            .remove_one::<String>("output-format")
+            .map(|s| OutputFormat::from_str(s.as_str()))
             .transpose()?
             .unwrap_or(OutputFormat::Table);
 
         Ok(Self::List(ListSplitArgs {
-            cluster_endpoint,
+            client_args,
             index_id,
             split_states,
             start_date,
@@ -230,46 +228,36 @@ impl SplitCliCommand {
         }))
     }
 
-    fn parse_mark_for_deletion_args(matches: &ArgMatches) -> anyhow::Result<Self> {
-        let cluster_endpoint = matches
-            .value_of("endpoint")
-            .map(Url::from_str)
-            .expect("`endpoint` is a required arg.")?;
+    fn parse_mark_for_deletion_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
+        let client_args = ClientArgs::parse(&mut matches)?;
         let index_id = matches
-            .value_of("index")
-            .map(String::from)
-            .expect("`index` is a required arg.");
+            .remove_one::<String>("index")
+            .expect("`index` should be a required arg.");
         let split_ids = matches
-            .values_of("splits")
-            .expect("`splits` is a required arg.")
-            .map(String::from)
+            .remove_many::<String>("splits")
+            .expect("`splits` should be a required arg.")
             .collect();
-        let assume_yes = matches.is_present("yes");
+        let assume_yes = matches.get_flag("yes");
         Ok(Self::MarkForDeletion(MarkForDeletionArgs {
-            cluster_endpoint,
+            client_args,
             index_id,
             split_ids,
             assume_yes,
         }))
     }
 
-    fn parse_describe_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    fn parse_describe_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let index_id = matches
-            .value_of("index")
-            .map(String::from)
-            .expect("`index` is a required arg.");
+            .remove_one::<String>("index")
+            .expect("`index` should be a required arg.");
         let split_id = matches
-            .value_of("split")
-            .map(String::from)
-            .expect("`split` is a required arg.");
-        let cluster_endpoint = matches
-            .value_of("endpoint")
-            .map(Url::from_str)
-            .expect("`endpoint` is a required arg.")?;
-        let verbose = matches.is_present("verbose");
+            .remove_one::<String>("split")
+            .expect("`split` should be a required arg.");
+        let client_args = ClientArgs::parse(&mut matches)?;
+        let verbose = matches.get_flag("verbose");
 
         Ok(Self::Describe(DescribeSplitArgs {
-            cluster_endpoint,
+            client_args,
             index_id,
             split_id,
             verbose,
@@ -287,8 +275,7 @@ impl SplitCliCommand {
 
 async fn list_split_cli(args: ListSplitArgs) -> anyhow::Result<()> {
     debug!(args=?args, "list-split");
-    let transport = Transport::new(args.cluster_endpoint);
-    let qw_client = QuickwitClient::new(transport);
+    let qw_client = args.client_args.client();
     let list_splits_query_params = ListSplitsQueryParams {
         split_states: args.split_states,
         start_timestamp: args.start_date.map(OffsetDateTime::unix_timestamp),
@@ -303,7 +290,7 @@ async fn list_split_cli(args: ListSplitArgs) -> anyhow::Result<()> {
         .splits(&args.index_id)
         .list(list_splits_query_params)
         .await
-        .expect("Failed to fetch splits.");
+        .context("Failed to list splits.")?;
     let output = match args.output_format {
         OutputFormat::Json => serde_json::to_string(&splits)?,
         OutputFormat::PrettyJson => serde_json::to_string_pretty(&splits)?,
@@ -318,14 +305,12 @@ async fn mark_splits_for_deletion_cli(args: MarkForDeletionArgs) -> anyhow::Resu
     println!("❯ Marking splits for deletion...");
     if !args.assume_yes {
         let prompt = "This operation will mark splits for deletion, those splits will be deleted \
-                      after the next garbage collection. Do you want to proceed?"
-            .to_string();
-        if !prompt_confirmation(&prompt, false) {
+                      after the next garbage collection. Do you want to proceed?";
+        if !prompt_confirmation(prompt, false) {
             return Ok(());
         }
     }
-    let transport = Transport::new(args.cluster_endpoint);
-    let qw_client = QuickwitClient::new(transport);
+    let qw_client = args.client_args.client();
     qw_client
         .splits(&args.index_id)
         .mark_for_deletion(args.split_ids)
@@ -347,8 +332,7 @@ struct FileRow {
 
 async fn describe_split_cli(args: DescribeSplitArgs) -> anyhow::Result<()> {
     debug!(args=?args, "describe-split");
-    let transport = Transport::new(args.cluster_endpoint);
-    let qw_client = QuickwitClient::new(transport);
+    let qw_client = args.client_args.client();
     let list_splits_query_params = ListSplitsQueryParams::default();
     let split = qw_client
         .splits(&args.index_id)
@@ -454,13 +438,13 @@ fn parse_date(date_arg: &str, option_name: &str) -> anyhow::Result<OffsetDateTim
 }
 
 fn parse_split_state(split_state_arg: &str) -> anyhow::Result<SplitState> {
-    let split_state = match split_state_arg.to_lowercase().as_ref() {
+    let split_state = match split_state_arg.to_lowercase().as_str() {
         "staged" => SplitState::Staged,
         "published" => SplitState::Published,
         "marked" => SplitState::MarkedForDeletion,
         _ => bail!(format!(
-            "Failed to parse split state `{split_state_arg}`. Possible values are `staged`, \
-             `published`, and `marked`."
+            "Unknown split state `{split_state_arg}`. Possible values are `staged`, `published`, \
+             and `marked`."
         )),
     };
     Ok(split_state)
@@ -486,6 +470,7 @@ struct SplitRow {
 
 #[cfg(test)]
 mod tests {
+    use reqwest::Url;
     use time::macros::datetime;
 
     use super::*;
@@ -512,7 +497,7 @@ mod tests {
             "--format",
             "json",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
 
         let expected_split_states = Some(vec![SplitState::Staged, SplitState::Published]);
         let expected_create_date = Some(datetime!(2020-12-24 00:00 UTC));
@@ -520,11 +505,11 @@ mod tests {
         let expected_end_date = Some(datetime!(2020-12-25 12:42 UTC));
         // let expected_tags = Some(TagFilterAst::And(vec![
         //     TagFilterAst::Tag {
-        //         is_present: true,
+        //         get_flag: true,
         //         tag: "tenant:a".to_string(),
         //     },
         //     TagFilterAst::Tag {
-        //         is_present: true,
+        //         get_flag: true,
         //         tag: "service:zk".to_string(),
         //     },
         // ]));
@@ -565,15 +550,15 @@ mod tests {
             "split1,split2",
             "--yes",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Split(SplitCliCommand::MarkForDeletion(MarkForDeletionArgs {
-                cluster_endpoint,
+                client_args,
                 index_id,
                 split_ids,
                 assume_yes,
-            })) if cluster_endpoint == Url::from_str("https://quickwit-cluster.io").unwrap()
+            })) if client_args.cluster_endpoint == Url::from_str("https://quickwit-cluster.io").unwrap()
                 && index_id == "wikipedia"
                 && split_ids == vec!["split1".to_string(), "split2".to_string()]
                 && assume_yes
@@ -592,7 +577,7 @@ mod tests {
             "--split",
             "ABC",
         ])?;
-        let command = CliCommand::parse_cli_args(&matches)?;
+        let command = CliCommand::parse_cli_args(matches)?;
         assert!(matches!(
             command,
             CliCommand::Split(SplitCliCommand::Describe(DescribeSplitArgs {

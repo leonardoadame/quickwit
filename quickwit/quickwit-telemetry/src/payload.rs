@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
 use std::env;
 use std::time::UNIX_EPOCH;
 
@@ -27,7 +28,9 @@ use uuid::Uuid;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TelemetryPayload {
     /// Client information. See details in `[ClientInformation]`.
-    pub client_information: ClientInformation,
+    pub client_info: ClientInfo,
+    /// Quickwit information. See details in `[QuickwitInfo]`.
+    pub quickwit_info: QuickwitTelemetryInfo,
     pub events: Vec<EventWithTimestamp>,
     /// Represents the number of events that where drops due to the
     /// combination of the `TELEMETRY_PUSH_COOLDOWN` and `MAX_EVENT_IN_QUEUE`.
@@ -39,6 +42,7 @@ pub struct EventWithTimestamp {
     /// Unix time in seconds.
     pub unixtime: u64,
     /// Telemetry event.
+    #[serde(flatten)]
     pub event: TelemetryEvent,
 }
 
@@ -61,52 +65,105 @@ impl From<TelemetryEvent> for EventWithTimestamp {
     }
 }
 
-/// Represents a Telemetry Event send to Quickwit's server for usage information.
-#[derive(Debug, Serialize, Deserialize)]
+/// Represents a Telemetry Event send to Quickwit's telemetry server for usage information.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
 pub enum TelemetryEvent {
-    /// Create command is called.
-    Create,
-    /// Ingest command is called.
-    Ingest,
-    /// Delete command
-    Delete,
-    /// Garbage Collect command
-    GarbageCollect,
-    /// Serve command is called.
-    RunService(String),
-    /// EndCommand (with the return code)
-    EndCommand { return_code: i32 },
+    RunCommand,
+    /// EndCommand (with the return code).
+    EndCommand {
+        return_code: i32,
+    },
+    /// Event sent every 12h to signal the server is running.
+    Running,
+    /// UI index.html was requested.
+    UiIndexPageLoad,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ClientInformation {
+pub struct ClientInfo {
     session_uuid: uuid::Uuid,
-    quickwit_version: String,
     os: String,
     arch: String,
     hashed_host_username: String,
     kubernetes: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QuickwitTelemetryInfo {
+    pub version: String,
+    pub services: HashSet<String>,
+    pub features: HashSet<QuickwitFeature>,
+}
+
+impl QuickwitTelemetryInfo {
+    pub fn new(services: HashSet<String>, features: HashSet<QuickwitFeature>) -> Self {
+        Self {
+            features,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            services,
+        }
+    }
+}
+
+impl Default for QuickwitTelemetryInfo {
+    fn default() -> Self {
+        Self {
+            features: HashSet::new(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            services: HashSet::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickwitFeature {
+    FileBackedMetastore,
+    Jaeger,
+    Otlp,
+    PostgresqMetastore,
+}
+
 fn hashed_host_username() -> String {
     let hostname = hostname::get()
         .map(|hostname| hostname.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "".to_string());
-    let username = username::get_user_name().unwrap_or_else(|_| "".to_string());
+        .unwrap_or_default();
+    let username = username::get_user_name().unwrap_or_default();
     let hashed_value = format!("{hostname}:{username}");
     let digest = md5::compute(hashed_value.as_bytes());
     format!("{digest:x}")
 }
 
-impl Default for ClientInformation {
-    fn default() -> ClientInformation {
-        ClientInformation {
+impl Default for ClientInfo {
+    fn default() -> ClientInfo {
+        ClientInfo {
             session_uuid: Uuid::new_v4(),
-            quickwit_version: env!("CARGO_PKG_VERSION").to_string(),
             os: env::consts::OS.to_string(),
             arch: env::consts::ARCH.to_string(),
             hashed_host_username: hashed_host_username(),
             kubernetes: std::env::var_os("KUBERNETES_SERVICE_HOST").is_some(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json;
+
+    use super::{EventWithTimestamp, TelemetryEvent};
+
+    #[test]
+    fn test_serialize_payload_as_expected() {
+        let event = EventWithTimestamp {
+            unixtime: 0,
+            event: TelemetryEvent::EndCommand { return_code: 0 },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert_eq!(
+            json,
+            r#"{"unixtime":0,"type":"end_command","return_code":0}"#
+        );
     }
 }

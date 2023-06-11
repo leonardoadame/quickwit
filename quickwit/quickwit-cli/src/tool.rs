@@ -33,12 +33,13 @@ use colored::{ColoredString, Colorize};
 use humantime::format_duration;
 use quickwit_actors::{ActorExitStatus, ActorHandle, ObservationType, Universe};
 use quickwit_cluster::{Cluster, ClusterMember};
+use quickwit_common::runtimes::RuntimesConfig;
 use quickwit_common::uri::Uri;
 use quickwit_common::{GREEN_COLOR, RED_COLOR};
 use quickwit_config::service::QuickwitService;
 use quickwit_config::{
-    IndexerConfig, QuickwitConfig, SourceConfig, SourceParams, TransformConfig, VecSourceParams,
-    CLI_INGEST_SOURCE_ID,
+    IndexerConfig, QuickwitConfig, SourceConfig, SourceInputFormat, SourceParams, TransformConfig,
+    VecSourceParams, CLI_INGEST_SOURCE_ID,
 };
 use quickwit_core::{clear_cache_directory, IndexService};
 use quickwit_indexing::actors::{IndexingService, MergePipeline, MergePipelineId};
@@ -46,18 +47,16 @@ use quickwit_indexing::models::{
     DetachIndexingPipeline, DetachMergePipeline, IndexingStatistics, SpawnPipeline,
 };
 use quickwit_indexing::IndexingPipeline;
-use quickwit_metastore::quickwit_metastore_uri_resolver;
-use quickwit_storage::{quickwit_storage_uri_resolver, BundleStorage, Storage};
-use quickwit_telemetry::payload::TelemetryEvent;
+use quickwit_storage::{BundleStorage, Storage};
 use thousands::Separable;
 use tracing::{debug, info};
 
 use crate::{
-    config_cli_arg, load_quickwit_config, parse_duration_with_unit, run_index_checklist,
+    config_cli_arg, get_resolvers, load_node_config, parse_duration_with_unit, run_index_checklist,
     start_actor_runtimes, THROUGHPUT_WINDOW_SIZE,
 };
 
-pub fn build_tool_command<'a>() -> Command<'a> {
+pub fn build_tool_command() -> Command {
     Command::new("tool")
         .about("Performs utility operations. Requires a node config.")
         .arg(config_cli_arg())
@@ -68,8 +67,12 @@ pub fn build_tool_command<'a>() -> Command<'a> {
                 .long_about("Local ingest indexes locally NDJSON documents from a file or from stdin and uploads splits on the configured storage.")
                 .args(&[
                     arg!(--index <INDEX> "ID of the target index")
-                        .display_order(1),
+                        .display_order(1)
+                        .required(true),
                     arg!(--"input-path" <INPUT_PATH> "Location of the input file.")
+                        .required(false),
+                    arg!(--"input-format" <INPUT_FORMAT> "Format of the input data.")
+                        .default_value("json")
                         .required(false),
                     arg!(--overwrite "Overwrites pre-existing index.")
                         .required(false),
@@ -84,9 +87,11 @@ pub fn build_tool_command<'a>() -> Command<'a> {
                 .about("Downloads and extracts a split to a directory.")
                 .args(&[
                     arg!(--index <INDEX> "ID of the target index")
-                        .display_order(1),
+                        .display_order(1)
+                        .required(true),
                     arg!(--split <SPLIT> "ID of the target split")
-                        .display_order(2),
+                        .display_order(2)
+                        .required(true),
                     arg!(--"target-dir" <TARGET_DIR> "Directory to extract the split to."),
                 ])
             )
@@ -96,7 +101,8 @@ pub fn build_tool_command<'a>() -> Command<'a> {
                 .about("Garbage collects stale staged splits and splits marked for deletion.")
                 .args(&[
                     arg!(--index <INDEX> "ID of the target index")
-                        .display_order(1),
+                        .display_order(1)
+                        .required(true),
                     arg!(--"grace-period" <GRACE_PERIOD> "Threshold period after which stale staged splits are garbage collected.")
                         .default_value("1h")
                         .required(false),
@@ -110,8 +116,11 @@ pub fn build_tool_command<'a>() -> Command<'a> {
                 .about("Merges all the splits for a given Node ID, index ID, source ID.")
                 .args(&[
                     arg!(--index <INDEX> "ID of the target index.")
-                        .display_order(1),
-                    arg!(--source <SOURCE_ID> "ID of the target source."),
+                        .display_order(1)
+                        .required(true),
+                    arg!(--source <SOURCE_ID> "ID of the target source.")
+                        .display_order(2)
+                        .required(true),
                 ])
             )
         .arg_required_else_help(true)
@@ -122,6 +131,7 @@ pub struct LocalIngestDocsArgs {
     pub config_uri: Uri,
     pub index_id: String,
     pub input_path_opt: Option<PathBuf>,
+    pub input_format: SourceInputFormat,
     pub overwrite: bool,
     pub vrl_script: Option<String>,
     pub clear_cache: bool,
@@ -159,64 +169,66 @@ pub enum ToolCliCommand {
 }
 
 impl ToolCliCommand {
-    pub fn parse_cli_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    pub fn parse_cli_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let (subcommand, submatches) = matches
-            .subcommand()
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse sub-matches."))?;
-        match subcommand {
+            .remove_subcommand()
+            .context("Failed to parse tool subcommand.")?;
+        match subcommand.as_str() {
             "gc" => Self::parse_garbage_collect_args(submatches),
             "local-ingest" => Self::parse_local_ingest_args(submatches),
             "merge" => Self::parse_merge_args(submatches),
             "extract-split" => Self::parse_extract_split_args(submatches),
-            _ => bail!("Tool subcommand `{}` is not implemented.", subcommand),
+            _ => bail!("Unknown tool subcommand `{subcommand}`."),
         }
     }
 
-    fn parse_local_ingest_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    fn parse_local_ingest_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let config_uri = matches
-            .value_of("config")
-            .map(Uri::from_str)
-            .expect("`config` is a required arg.")?;
+            .remove_one::<String>("config")
+            .map(|uri_str| Uri::from_str(&uri_str))
+            .expect("`config` should be a required arg.")?;
         let index_id = matches
-            .value_of("index")
-            .expect("`index` is a required arg.")
-            .to_string();
-        let input_path_opt = if let Some(input_path) = matches.value_of("input-path") {
-            Uri::from_str(input_path)?
+            .remove_one::<String>("index")
+            .expect("`index` should be a required arg.");
+        let input_path_opt = if let Some(input_path) = matches.remove_one::<String>("input-path") {
+            Uri::from_str(&input_path)?
                 .filepath()
                 .map(|path| path.to_path_buf())
         } else {
             None
         };
-        let overwrite = matches.is_present("overwrite");
-        let vrl_script = matches
-            .value_of("transform-script")
-            .map(|source| source.to_string());
-        let clear_cache = !matches.is_present("keep-cache");
+
+        let input_format = matches
+            .remove_one::<String>("input-format")
+            .map(|input_format| SourceInputFormat::from_str(&input_format))
+            .expect("`input-format` should have a default value.")
+            .map_err(|err| anyhow::anyhow!(err))?;
+        let overwrite = matches.get_flag("overwrite");
+        let vrl_script = matches.remove_one::<String>("transform-script");
+        let clear_cache = !matches.get_flag("keep-cache");
 
         Ok(Self::LocalIngest(LocalIngestDocsArgs {
             config_uri,
             index_id,
             input_path_opt,
+            input_format,
             overwrite,
             vrl_script,
             clear_cache,
         }))
     }
 
-    fn parse_merge_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    fn parse_merge_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let config_uri = matches
-            .value_of("config")
-            .map(Uri::from_str)
-            .expect("`config` is a required arg.")?;
+            .remove_one::<String>("config")
+            .map(|uri_str| Uri::from_str(&uri_str))
+            .expect("`config` should be a required arg.")?;
         let index_id = matches
-            .value_of("index")
-            .context("'index-id' is a required arg.")?
-            .to_string();
+            .remove_one::<String>("index")
+            .expect("'index-id' should be a required arg.");
         let source_id = matches
-            .value_of("source")
-            .context("'source-id' is a required arg.")?
-            .to_string();
+            .remove_one::<String>("source")
+            .expect("'source-id' should be a required arg.");
         Ok(Self::Merge(MergeArgs {
             index_id,
             source_id,
@@ -224,20 +236,19 @@ impl ToolCliCommand {
         }))
     }
 
-    fn parse_garbage_collect_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    fn parse_garbage_collect_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let config_uri = matches
-            .value_of("config")
-            .map(Uri::from_str)
-            .expect("`config` is a required arg.")?;
+            .remove_one::<String>("config")
+            .map(|uri_str| Uri::from_str(&uri_str))
+            .expect("`config` should be a required arg.")?;
         let index_id = matches
-            .value_of("index")
-            .expect("`index` is a required arg.")
-            .to_string();
+            .remove_one::<String>("index")
+            .expect("`index` should be a required arg.");
         let grace_period = matches
-            .value_of("grace-period")
-            .map(parse_duration_with_unit)
+            .remove_one::<String>("grace-period")
+            .map(|duration| parse_duration_with_unit(&duration))
             .expect("`grace-period` should have a default value.")?;
-        let dry_run = matches.is_present("dry-run");
+        let dry_run = matches.get_flag("dry-run");
         Ok(Self::GarbageCollect(GarbageCollectIndexArgs {
             index_id,
             grace_period,
@@ -246,23 +257,21 @@ impl ToolCliCommand {
         }))
     }
 
-    fn parse_extract_split_args(matches: &ArgMatches) -> anyhow::Result<Self> {
+    fn parse_extract_split_args(mut matches: ArgMatches) -> anyhow::Result<Self> {
         let index_id = matches
-            .value_of("index")
-            .map(String::from)
-            .expect("`index` is a required arg.");
+            .remove_one::<String>("index")
+            .expect("`index` should be a required arg.");
         let split_id = matches
-            .value_of("split")
-            .map(String::from)
-            .expect("`split` is a required arg.");
+            .remove_one::<String>("split")
+            .expect("`split` should be a required arg.");
         let config_uri = matches
-            .value_of("config")
-            .map(Uri::from_str)
-            .expect("`config` is a required arg.")?;
+            .remove_one::<String>("config")
+            .map(|uri_str| Uri::from_str(&uri_str))
+            .expect("`config` should be a required arg.")?;
         let target_dir = matches
-            .value_of("target-dir")
+            .remove_one::<String>("target-dir")
             .map(PathBuf::from)
-            .expect("`target-dir` is a required arg.");
+            .expect("`target-dir` should be a required arg.");
         Ok(Self::ExtractSplit(ExtractSplitArgs {
             config_uri,
             index_id,
@@ -284,9 +293,10 @@ impl ToolCliCommand {
 pub async fn local_ingest_docs_cli(args: LocalIngestDocsArgs) -> anyhow::Result<()> {
     debug!(args=?args, "local-ingest-docs");
     println!("❯ Ingesting documents locally...");
-    quickwit_telemetry::send_telemetry_event(TelemetryEvent::Ingest).await;
 
-    let config = load_quickwit_config(&args.config_uri).await?;
+    let config = load_node_config(&args.config_uri).await?;
+    let (storage_resolver, metastore_resolver) = get_resolvers(&config).await;
+    let metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
 
     let source_params = if let Some(filepath) = args.input_path_opt.as_ref() {
         SourceParams::file(filepath)
@@ -298,20 +308,23 @@ pub async fn local_ingest_docs_cli(args: LocalIngestDocsArgs) -> anyhow::Result<
         .map(|vrl_script| TransformConfig::new(vrl_script, None));
     let source_config = SourceConfig {
         source_id: CLI_INGEST_SOURCE_ID.to_string(),
-        max_num_pipelines_per_indexer: NonZeroUsize::new(1).unwrap(),
-        desired_num_pipelines: NonZeroUsize::new(1).unwrap(),
+        max_num_pipelines_per_indexer: NonZeroUsize::new(1).expect("1 is always non-zero."),
+        desired_num_pipelines: NonZeroUsize::new(1).expect("1 is always non-zero."),
         enabled: true,
         source_params,
         transform_config,
+        input_format: args.input_format,
     };
-    run_index_checklist(&config.metastore_uri, &args.index_id, Some(&source_config)).await?;
-    let metastore_uri_resolver = quickwit_metastore_uri_resolver();
-    let metastore = metastore_uri_resolver
-        .resolve(&config.metastore_uri)
-        .await?;
+    run_index_checklist(
+        &*metastore,
+        &storage_resolver,
+        &args.index_id,
+        Some(&source_config),
+    )
+    .await?;
 
     if args.overwrite {
-        let index_service = IndexService::from_config(config.clone()).await?;
+        let index_service = IndexService::new(metastore.clone(), storage_resolver.clone());
         index_service.clear_index(&args.index_id).await?;
     }
     // The indexing service needs to update its cluster chitchat state so that the control plane is
@@ -321,15 +334,20 @@ pub async fn local_ingest_docs_cli(args: LocalIngestDocsArgs) -> anyhow::Result<
     let indexer_config = IndexerConfig {
         ..Default::default()
     };
-    start_actor_runtimes(&HashSet::from_iter([QuickwitService::Indexer]))?;
+    let runtimes_config = RuntimesConfig::default();
+    start_actor_runtimes(
+        runtimes_config,
+        &HashSet::from_iter([QuickwitService::Indexer]),
+    )?;
     let indexing_server = IndexingService::new(
         config.node_id.clone(),
         config.data_dir_path.clone(),
         indexer_config,
+        runtimes_config.num_threads_blocking,
         cluster,
         metastore,
         None,
-        quickwit_storage_uri_resolver().clone(),
+        storage_resolver,
     )
     .await?;
     let universe = Universe::new();
@@ -398,26 +416,28 @@ pub async fn local_ingest_docs_cli(args: LocalIngestDocsArgs) -> anyhow::Result<
 pub async fn merge_cli(args: MergeArgs) -> anyhow::Result<()> {
     debug!(args=?args, "run-merge-operations");
     println!("❯ Merging splits locally...");
-    let config = load_quickwit_config(&args.config_uri).await?;
-    run_index_checklist(&config.metastore_uri, &args.index_id, None).await?;
-    let indexer_config = IndexerConfig {
-        ..Default::default()
-    };
+    let config = load_node_config(&args.config_uri).await?;
+    let (storage_resolver, metastore_resolver) = get_resolvers(&config).await;
+    let metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
+    run_index_checklist(&*metastore, &storage_resolver, &args.index_id, None).await?;
     // The indexing service needs to update its cluster chitchat state so that the control plane is
     // aware of the running tasks. We thus create a fake cluster to instantiate the indexing service
     // and avoid impacting potential control plane running on the cluster.
     let cluster = create_empty_cluster(&config).await?;
-    let metastore_uri_resolver = quickwit_metastore_uri_resolver();
-    let metastore = metastore_uri_resolver
-        .resolve(&config.metastore_uri)
-        .await?;
-    let storage_resolver = quickwit_storage_uri_resolver().clone();
-    start_actor_runtimes(&HashSet::from_iter([QuickwitService::Indexer]))?;
+    let runtimes_config = RuntimesConfig::default();
+    start_actor_runtimes(
+        runtimes_config,
+        &HashSet::from_iter([QuickwitService::Indexer]),
+    )?;
     let universe = Universe::new();
+    let indexer_config = IndexerConfig {
+        ..Default::default()
+    };
     let indexing_server = IndexingService::new(
         config.node_id,
         config.data_dir_path,
         indexer_config,
+        runtimes_config.num_threads_blocking,
         cluster,
         metastore,
         None,
@@ -436,6 +456,7 @@ pub async fn merge_cli(args: MergeArgs) -> anyhow::Result<()> {
                 enabled: true,
                 source_params: SourceParams::Vec(VecSourceParams::default()),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
             pipeline_ord: 0,
         })
@@ -478,10 +499,11 @@ pub async fn merge_cli(args: MergeArgs) -> anyhow::Result<()> {
 pub async fn garbage_collect_index_cli(args: GarbageCollectIndexArgs) -> anyhow::Result<()> {
     debug!(args=?args, "garbage-collect-index");
     println!("❯ Garbage collecting index...");
-    quickwit_telemetry::send_telemetry_event(TelemetryEvent::GarbageCollect).await;
 
-    let quickwit_config = load_quickwit_config(&args.config_uri).await?;
-    let index_service = IndexService::from_config(quickwit_config.clone()).await?;
+    let config = load_node_config(&args.config_uri).await?;
+    let (storage_resolver, metastore_resolver) = get_resolvers(&config).await;
+    let metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
+    let index_service = IndexService::new(metastore, storage_resolver);
     let removal_info = index_service
         .garbage_collect_index(&args.index_id, args.grace_period, args.dry_run)
         .await?;
@@ -542,14 +564,11 @@ async fn extract_split_cli(args: ExtractSplitArgs) -> anyhow::Result<()> {
     debug!(args=?args, "extract-split");
     println!("❯ Extracting split...");
 
-    let quickwit_config = load_quickwit_config(&args.config_uri).await?;
-    let storage_uri_resolver = quickwit_storage_uri_resolver();
-    let metastore_uri_resolver = quickwit_metastore_uri_resolver();
-    let metastore = metastore_uri_resolver
-        .resolve(&quickwit_config.metastore_uri)
-        .await?;
+    let config = load_node_config(&args.config_uri).await?;
+    let (storage_resolver, metastore_resolver) = get_resolvers(&config).await;
+    let metastore = metastore_resolver.resolve(&config.metastore_uri).await?;
     let index_metadata = metastore.index_metadata(&args.index_id).await?;
-    let index_storage = storage_uri_resolver.resolve(index_metadata.index_uri())?;
+    let index_storage = storage_resolver.resolve(index_metadata.index_uri()).await?;
     let split_file = PathBuf::from(format!("{}.split", args.split_id));
     let split_data = index_storage.get_all(split_file.as_path()).await?;
     let (_hotcache_bytes, bundle_storage) = BundleStorage::open_from_split_data_with_owned_bytes(

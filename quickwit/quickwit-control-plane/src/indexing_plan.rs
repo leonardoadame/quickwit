@@ -169,12 +169,14 @@ pub(crate) fn build_physical_indexing_plan(
         // `build_indexing_plan`, we make sure to always respect the constraint
         // `max_num_pipelines_per_indexer` by limiting the number of indexing tasks per
         // source.
-        let best_node_score_opt =
-            candidates
+        let best_node_score_opt = candidates
             .iter()
             .rev() //< we use the reverse iterator, because in case of a tie, max picks the last element.
             // we want the first one in order to maximize affinity.
-            .map(|&node_id| NodeScore { node_id, score: compute_node_score(node_id, &plan) })
+            .map(|&node_id| NodeScore {
+                node_id,
+                score: compute_node_score(node_id, &plan),
+            })
             .max();
         if let Some(best_node_score) = best_node_score_opt {
             plan.assign_indexing_task(best_node_score.node_id.to_string(), indexing_task);
@@ -322,8 +324,8 @@ mod tests {
     use quickwit_common::rand::append_random_suffix;
     use quickwit_config::service::QuickwitService;
     use quickwit_config::{
-        FileSourceParams, KafkaSourceParams, SourceConfig, SourceParams, CLI_INGEST_SOURCE_ID,
-        INGEST_API_SOURCE_ID,
+        FileSourceParams, KafkaSourceParams, SourceConfig, SourceInputFormat, SourceParams,
+        CLI_INGEST_SOURCE_ID, INGEST_API_SOURCE_ID,
     };
     use quickwit_proto::indexing_api::IndexingTask;
     use quickwit_proto::IndexUid;
@@ -384,7 +386,9 @@ mod tests {
         let indexers = cluster_members_for_test(4, QuickwitService::Indexer);
         let mut source_configs_map = HashMap::new();
         let index_source_id = IndexSourceId {
-            index_uid: "one-source-index:1111111111111".to_string().into(),
+            index_uid: "one-source-index:11111111111111111111111111"
+                .to_string()
+                .into(),
             source_id: "source-0".to_string(),
         };
         source_configs_map.insert(
@@ -396,6 +400,7 @@ mod tests {
                 enabled: true,
                 source_params: kafka_source_params_for_test(),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
 
@@ -418,7 +423,9 @@ mod tests {
         let indexers = cluster_members_for_test(4, QuickwitService::Indexer);
         let mut source_configs_map = HashMap::new();
         let index_source_id = IndexSourceId {
-            index_uid: "ingest-api-index:1111111111111".to_string().into(),
+            index_uid: "ingest-api-index:11111111111111111111111111"
+                .to_string()
+                .into(),
             source_id: INGEST_API_SOURCE_ID.to_string(),
         };
         source_configs_map.insert(
@@ -430,6 +437,7 @@ mod tests {
                 enabled: true,
                 source_params: SourceParams::IngestApi,
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
 
@@ -452,15 +460,21 @@ mod tests {
         let indexers = cluster_members_for_test(4, QuickwitService::Indexer);
         let mut source_configs_map = HashMap::new();
         let file_index_source_id = IndexSourceId {
-            index_uid: "one-source-index:1111111111111".to_string().into(),
+            index_uid: "one-source-index:11111111111111111111111111"
+                .to_string()
+                .into(),
             source_id: "file-source".to_string(),
         };
         let cli_ingest_index_source_id = IndexSourceId {
-            index_uid: "second-source-index:1111111111111".to_string().into(),
+            index_uid: "second-source-index:11111111111111111111111111"
+                .to_string()
+                .into(),
             source_id: CLI_INGEST_SOURCE_ID.to_string(),
         };
         let kafka_index_source_id = IndexSourceId {
-            index_uid: "third-source-index:1111111111111".to_string().into(),
+            index_uid: "third-source-index:11111111111111111111111111"
+                .to_string()
+                .into(),
             source_id: "kafka-source".to_string(),
         };
         source_configs_map.insert(
@@ -472,6 +486,7 @@ mod tests {
                 enabled: true,
                 source_params: SourceParams::File(FileSourceParams { filepath: None }),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
         source_configs_map.insert(
@@ -483,6 +498,7 @@ mod tests {
                 enabled: true,
                 source_params: SourceParams::IngestCli,
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
         source_configs_map.insert(
@@ -494,6 +510,7 @@ mod tests {
                 enabled: false,
                 source_params: kafka_source_params_for_test(),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
         let indexing_tasks = build_indexing_plan(&indexers, &source_configs_map);
@@ -512,11 +529,11 @@ mod tests {
         let source_2 = "0";
         let mut source_configs_map = HashMap::new();
         let kafka_index_source_id_1 = IndexSourceId {
-            index_uid: IndexUid::from_parts(index_1, "1111111111111"),
+            index_uid: IndexUid::from_parts(index_1, "11111111111111111111111111"),
             source_id: source_1.to_string(),
         };
         let kafka_index_source_id_2 = IndexSourceId {
-            index_uid: IndexUid::from_parts(index_2, "1111111111111"),
+            index_uid: IndexUid::from_parts(index_2, "11111111111111111111111111"),
             source_id: source_2.to_string(),
         };
         source_configs_map.insert(
@@ -528,6 +545,7 @@ mod tests {
                 enabled: true,
                 source_params: kafka_source_params_for_test(),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
         source_configs_map.insert(
@@ -539,20 +557,27 @@ mod tests {
                 enabled: true,
                 source_params: kafka_source_params_for_test(),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
         let mut indexing_tasks = Vec::new();
         for _ in 0..3 {
             indexing_tasks.push(IndexingTask {
-                index_uid: IndexUid::from_parts(index_1.to_string(), "1111111111111".to_string())
-                    .to_string(),
+                index_uid: IndexUid::from_parts(
+                    index_1.to_string(),
+                    "11111111111111111111111111".to_string(),
+                )
+                .to_string(),
                 source_id: source_1.to_string(),
             });
         }
         for _ in 0..2 {
             indexing_tasks.push(IndexingTask {
-                index_uid: IndexUid::from_parts(index_2.to_string(), "1111111111111".to_string())
-                    .to_string(),
+                index_uid: IndexUid::from_parts(
+                    index_2.to_string(),
+                    "11111111111111111111111111".to_string(),
+                )
+                .to_string(),
                 source_id: source_2.to_string(),
             });
         }
@@ -596,7 +621,7 @@ mod tests {
         let source_1 = "source-1";
         let mut source_configs_map = HashMap::new();
         let kafka_index_source_id_1 = IndexSourceId {
-            index_uid: IndexUid::from_parts(index_1, "1111111111111"),
+            index_uid: IndexUid::from_parts(index_1, "11111111111111111111111111"),
             source_id: source_1.to_string(),
         };
         source_configs_map.insert(
@@ -608,15 +633,16 @@ mod tests {
                 enabled: true,
                 source_params: kafka_source_params_for_test(),
                 transform_config: None,
+                input_format: SourceInputFormat::Json,
             },
         );
         let indexing_tasks = vec![
             IndexingTask {
-                index_uid: IndexUid::from_parts(index_1, "1111111111111").to_string(),
+                index_uid: IndexUid::from_parts(index_1, "11111111111111111111111111").to_string(),
                 source_id: source_1.to_string(),
             },
             IndexingTask {
-                index_uid: IndexUid::from_parts(index_1, "1111111111111").to_string(),
+                index_uid: IndexUid::from_parts(index_1, "11111111111111111111111111").to_string(),
                 source_id: source_1.to_string(),
             },
         ];
@@ -669,6 +695,7 @@ mod tests {
               enabled: true,
               source_params: kafka_source_params_for_test(),
               transform_config: None,
+              input_format: SourceInputFormat::Json,
           })
       }
     }

@@ -22,7 +22,8 @@ use tantivy::query::BoostQuery as TantivyBoostQuery;
 use tantivy::schema::Schema as TantivySchema;
 
 mod bool_query;
-mod phrase_query;
+mod full_text_query;
+mod phrase_prefix_query;
 mod range_query;
 mod tantivy_query_ast;
 mod term_query;
@@ -32,7 +33,8 @@ pub(crate) mod utils;
 mod visitor;
 
 pub use bool_query::BoolQuery;
-pub use phrase_query::PhraseQuery;
+pub use full_text_query::{FullTextMode, FullTextParams, FullTextQuery};
+pub use phrase_prefix_query::PhrasePrefixQuery;
 pub use range_query::RangeQuery;
 use tantivy_query_ast::TantivyQueryAst;
 pub use term_query::TermQuery;
@@ -44,11 +46,13 @@ use crate::{InvalidQuery, NotNaNf32};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
 pub enum QueryAst {
     Bool(BoolQuery),
     Term(TermQuery),
     TermSet(TermSetQuery),
-    Phrase(PhraseQuery),
+    FullText(FullTextQuery),
+    PhrasePrefix(PhrasePrefixQuery),
     Range(RangeQuery),
     UserInput(UserInputQuery),
     MatchAll,
@@ -85,7 +89,8 @@ impl QueryAst {
             }
             ast @ QueryAst::Term(_)
             | ast @ QueryAst::TermSet(_)
-            | ast @ QueryAst::Phrase(_)
+            | ast @ QueryAst::FullText(_)
+            | ast @ QueryAst::PhrasePrefix(_)
             | ast @ QueryAst::MatchAll
             | ast @ QueryAst::MatchNone
             | ast @ QueryAst::Range(_) => Ok(ast),
@@ -186,8 +191,11 @@ impl BuildTantivyAst for QueryAst {
             QueryAst::TermSet(term_set) => {
                 term_set.build_tantivy_ast_call(schema, search_fields, with_validation)
             }
-            QueryAst::Phrase(phrase_query) => {
-                phrase_query.build_tantivy_ast_call(schema, search_fields, with_validation)
+            QueryAst::FullText(full_text_query) => {
+                full_text_query.build_tantivy_ast_call(schema, search_fields, with_validation)
+            }
+            QueryAst::PhrasePrefix(phrase_prefix_query) => {
+                phrase_prefix_query.build_tantivy_ast_call(schema, search_fields, with_validation)
             }
             QueryAst::UserInput(user_text_query) => {
                 user_text_query.build_tantivy_ast_call(schema, search_fields, with_validation)
@@ -278,7 +286,13 @@ mod tests {
             .build_tantivy_ast_call(&schema, &[], true)
             .unwrap();
         let tantivy_query_ast_simplified = tantivy_query_ast.simplify();
-        assert_eq!(&tantivy_query_ast_simplified, &TantivyQueryAst::match_all(),);
+        // This does not get more simplified than this, because we need the boost 0 score.
+        let tantivy_bool_query = tantivy_query_ast_simplified.as_bool_query().unwrap();
+        assert_eq!(tantivy_bool_query.must.len(), 0);
+        assert_eq!(tantivy_bool_query.should.len(), 0);
+        assert_eq!(tantivy_bool_query.must_not.len(), 0);
+        assert_eq!(tantivy_bool_query.filter.len(), 1);
+        assert_eq!(&tantivy_bool_query.filter[0], &TantivyQueryAst::match_all(),);
     }
 
     #[test]
@@ -286,7 +300,7 @@ mod tests {
         let query_ast: QueryAst = UserInputQuery {
             user_text: "field:hello field:toto".to_string(),
             default_fields: None,
-            default_operator: crate::DefaultOperator::And,
+            default_operator: crate::BooleanOperand::And,
         }
         .parse_user_query(&[])
         .unwrap();
@@ -299,7 +313,7 @@ mod tests {
         let query_ast: QueryAst = UserInputQuery {
             user_text: "field:hello field:toto".to_string(),
             default_fields: None,
-            default_operator: crate::DefaultOperator::Or,
+            default_operator: crate::BooleanOperand::Or,
         }
         .parse_user_query(&[])
         .unwrap();

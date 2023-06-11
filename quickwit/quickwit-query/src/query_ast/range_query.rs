@@ -166,11 +166,11 @@ fn convert_bound<'a, T>(bound: &'a Bound<JsonLiteral>) -> Option<Bound<T>>
 where T: InterpretUserInput<'a> {
     match bound {
         Bound::Included(val) => {
-            let val = T::interpret(val)?;
+            let val = T::interpret_json(val)?;
             Some(Bound::Included(val))
         }
         Bound::Excluded(val) => {
-            let val = T::interpret(val)?;
+            let val = T::interpret_json(val)?;
             Some(Bound::Excluded(val))
         }
         Bound::Unbounded => Some(Bound::Unbounded),
@@ -338,9 +338,9 @@ mod tests {
     use tantivy::schema::{Schema, FAST, STORED, TEXT};
 
     use super::RangeQuery;
-    use crate::query_ast::tantivy_query_ast::{MatchAllOrNone, TantivyBoolQuery};
+    use crate::query_ast::tantivy_query_ast::TantivyBoolQuery;
     use crate::query_ast::BuildTantivyAst;
-    use crate::{InvalidQuery, JsonLiteral};
+    use crate::{InvalidQuery, JsonLiteral, MatchAllOrNone};
 
     fn make_schema(dynamic_mode: bool) -> Schema {
         let mut schema_builder = Schema::builder();
@@ -367,7 +367,7 @@ mod tests {
             .unwrap()
             .simplify();
         let leaf = tantivy_ast.as_leaf().unwrap();
-        let leaf_str = format!("{:?}", leaf);
+        let leaf_str = format!("{leaf:?}");
         assert_eq!(leaf_str, expected);
     }
 

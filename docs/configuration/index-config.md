@@ -20,7 +20,7 @@ The index configuration format is YAML. When a key is absent from the configurat
 Here is a complete example suited for the HDFS logs dataset:
 
 ```yaml
-version: 0.5 # File format version.
+version: 0.6 # File format version.
 
 index_id: "hdfs"
 
@@ -88,15 +88,17 @@ The doc mapping defines how a document and the fields it contains are stored and
 | `field_mappings` | Collection of field mapping, each having its own data type (text, binary, datetime, bool, i64, u64, f64).   | `[]` |
 | `mode`        | Defines how quickwit should handle document fields that are not present in the `field_mappings`. In particular, the "dynamic" mode makes it possible to use quickwit in a schemaless manner. (See [mode](#mode)) | `lenient`
 | `dynamic_mapping` | This parameter is only allowed when `mode` is set to `dynamic`. It then defines whether dynamically mapped fields should be indexed, stored, etc.  | (See [mode](#mode))
-| `tag_fields` | Collection of fields already defined in `field_mappings` whose values will be stored as part of the `tags` metadata. [Learn more about tags](../overview/concepts/querying.md#tag-pruning). | `[]` |
+| `tag_fields` | Collection of fields* already defined in `field_mappings` whose values will be stored as part of the `tags` metadata. [Learn more about tags](../overview/concepts/querying.md#tag-pruning). | `[]` |
 | `store_source` | Whether or not the original JSON document is stored or not in the index.   | `false` |
-| `timestamp_field`      | Timestamp field used for sharding documents in splits. The field has to be of type `datetime`. [Learn more about time sharding](./../overview/architecture.md).  | `None` |
+| `timestamp_field`      | Timestamp field* used for sharding documents in splits. The field has to be of type `datetime`. [Learn more about time sharding](./../overview/architecture.md).  | `None` |
  `partition_key`   |  If set, quickwit will route documents into different splits depending on the field name declared as the `partition_key`. | `null` |
 | `max_num_partitions`  | Limits the number of splits created through partitioning. (See [Partitioning](../overview/concepts/querying.md#partitioning))  |    `200` |
 
+*: tags fields and timestamp field are expressed as a path from the root of the JSON object to the given field. If a field name contains a `.` character, it needs to be escaped with a `\` character.
+
 ### Field types
 
-Each field has a type that indicates the kind of data it contains, such as integer on 64 bits or text.
+Each field[^1] has a type that indicates the kind of data it contains, such as integer on 64 bits or text.
 Quickwit supports the following raw types [`text`](#text-type), [`i64`](#numeric-types-i64-u64-and-f64-type), [`u64`](#numeric-types-i64-u64-and-f64-type), [`f64`](#numeric-types-i64-u64-and-f64-type), [`datetime`](#datetime-type), [`bool`](#bool-type), [`ip`](#ip-type), and [`bytes`](#bytes-type), and also supports composite types such as array and object. Behind the scenes, Quickwit is using tantivy field types, don't hesitate to look at [tantivy documentation](https://github.com/tantivy-search/tantivy) if you want to go into the details.
 
 ### Raw types
@@ -115,6 +117,8 @@ type: text
 tokenizer: default
 record: position
 fieldnorms: true
+fast:
+  normalizer: lowercase
 ```
 
 **Parameters for text field**
@@ -126,17 +130,24 @@ fieldnorms: true
 | `tokenizer` | Name of the `Tokenizer`. ([See tokenizers](#description-of-available-tokenizers)) for a list of available tokenizers.  | `default` |
 | `record`    | Describes the amount of information indexed, choices between `basic`, `freq` and `position` | `basic` |
 | `fieldnorms` | Whether to store fieldnorms for the field. Fieldnorms are required to calculate the BM25 Score of the document. | `false` |
-| `fast`     | Whether value is stored in a fast field. The fast field will contain the term ids and the dictionary. The effective cardinality depends on the tokenizer. The default behaviour for `true` is to store the original text unchanged. The tokenizer on the fast field is seperately configured. It can be configured via `{"tokenizer": "lowercase"}`. ([See tokenizers](#description-of-available-tokenizers)) for a list of available tokenizers. | `false` |
+| `fast`     | Whether value is stored in a fast field. The fast field will contain the term ids and the dictionary. The default behaviour for `true` is to store the original text unchanged. The normalizers on the fast field is seperately configured. It can be configured via `normalizer: lowercase`. ([See normalizers](#description-of-available-normalizers)) for a list of available normalizers. | `false` |
 
 #### **Description of available tokenizers**
 
 | Tokenizer     | Description   |
 | ------------- | ------------- |
-| `raw`         | Does not process nor tokenize text  |
-| `default`     | Chops the text on according to whitespace and punctuation, removes tokens that are too long, and converts to lowercase |
-| `en_stem`     |  Like `default`, but also applies stemming on the resulting tokens  |
+| `raw`         | Does not process nor tokenize text. Filters out tokens larger than 255 bytes.  |
+| `default`     | Chops the text on according to whitespace and punctuation, removes tokens that are too long, and converts to lowercase. Filters out tokens larger than 255 bytes. |
+| `en_stem`     |  Like `default`, but also applies stemming on the resulting tokens. Filters out tokens larger than 255 bytes.  |
 | `chinese_compatible` |  Chop between each CJK character in addition to what `default` does. Should be used with `record: position` to be able to properly search |
 | `lowercase` |  Applies a lowercase transformation on the text. It does not tokenize the text. |
+
+#### **Description of available normalizers**
+
+| Normalizer     | Description   |
+| ------------- | ------------- |
+| `raw`         | Does not process nor tokenize text. Filters token larger than 255 bytes.  |
+| `lowercase` |  Applies a lowercase transformation on the text. Filters token larger than 255 bytes. |
 
 **Description of record options**
 
@@ -312,6 +323,8 @@ stored: true
 indexed: true
 tokenizer: "default"
 expand_dots: false
+fast: 
+  normalizer: lowercase
 ```
 
 **Parameters for JSON field**
@@ -321,7 +334,7 @@ expand_dots: false
 | `description` | Optional description for the field. | `None` |
 | `stored`    | Whether value is stored in the document store | `true` |
 | `indexed`   | Whether value is indexed | `true` |
-| `fast`   | Whether value is fast | `false` |
+| `fast`     | Whether value is stored in a fast field. The default behaviour for text in the JSON is to store the text unchanged. An normalizer can be configured via `normalizer: lowercase`. ([See normalizers](#description-of-available-normalizers)) for a list of available normalizers. | `true` |
 | `tokenizer` | **Only affects strings in the json object**. Name of the `Tokenizer`, choices between `raw`, `default`, `en_stem` and `chinese_compatible` | `default` |
 | `record`    | **Only affects strings in the json object**. Describes the amount of information indexed, choices between `basic`, `freq` and `position` | `basic` |
 | `expand_dots`    | If true, json keys containing a `.` should be expanded. For instance, if `expand_dots` is set to true, `{"k8s.node.id": "node-2"}` will be indexed as if it was `{"k8s": {"node": {"id": "node2"}}}`. The benefit is that escaping the `.` will not be required at query time. In other words, `k8s.node.id:node2` will match the document. This does not impact the way the document is stored.  | `true` |
@@ -376,9 +389,9 @@ field_mappings:
 The `mode` describes how Quickwit should behave when it receives a field that is not defined in the field mapping.
 
 Quickwit offers you three different modes:
-- `lenient` (default value): unmapped fields are dismissed by Quickwit.
+- `dynamic` (default value): unmapped fields are gathered by Quickwit and handled as defined in the `dynamic_mapping` parameter.
+- `lenient`: unmapped fields are dismissed by Quickwit.
 - `strict`: if a document contains a field that is not mapped, quickwit will dismiss it, and count it as an error.
-- `dynamic`: unmapped fields are gathered by Quickwit and handled as defined in the `dynamic_mapping` parameter.
 
 #### Dynamic Mapping
 
@@ -387,7 +400,7 @@ The configuration of `dynamic` mode can be set via the `dynamic_mapping` paramet
 `dynamic_mapping` offers the same configuration options as when configuring a `json` field. It defaults to:
 
 ```yaml
-version: 0.5
+version: 0.6
 index_id: my-dynamic-index
 doc_mapping:
   mode: dynamic
@@ -407,14 +420,15 @@ the root of the JSON object.
 For instance, in a entirely schemaless settings, a minimal index configuration could be:
 
 ```yaml
-version: 0.5
+version: 0.6
 index_id: my-dynamic-index
-# note we did not map anything.
 doc_mapping:
-  mode: dynamic
+    # If you have a timestamp field, it is important to tell quickwit about it.
+    timestamp_field: unix_timestamp
+    # mode: dynamic #< Commented out, as dynamic is the default mode.
 ```
 
-We could then index a complex document like the following:
+With such a simple configuration, we can index a complex document like the following:
 
 ```json
 {
@@ -492,7 +506,7 @@ Quickwit's default merge policy is the `stable_log` merge policy
 with the following parameters:
 
 ```yaml
-version: 0.5
+version: 0.6
 index_id: "hdfs"
 # ...
 indexing_settings:
@@ -520,7 +534,7 @@ of the number of merge operation a split should undergo.
 
 
 ```yaml
-version: 0.5
+version: 0.6
 index_id: "hdfs"
 # ...
 indexing_settings:
@@ -548,7 +562,7 @@ This setting is not recommended. Merges are necessary to reduce the number of sp
 :::
 
 ```yaml
-version: 0.5
+version: 0.6
 index_id: "hdfs"
 indexing_settings:
     merge_policy:
@@ -568,14 +582,15 @@ This section describes search settings for a given index.
 
 | Variable      | Description   | Default value |
 | ------------- | ------------- | ------------- |
-| `search_default_fields`      | Default list of fields that will be used for search.   | `None` |
+| `default_search_fields`      | Default list of fields that will be used for search. The field names in this list may be declared
+explicitly in the schema, or may refer to a field captured by the dynamic mode.   | `None` |
 
 ## Retention policy
 
 This section describes how Quickwit manages data retention. In Quickwit, the retention policy manager drops data on a split basis as opposed to individually dropping documents. Splits are evaluated based on their `time_range` which is derived from the index timestamp field specified in the (`indexing_settings.timestamp_field`) settings. Using this setting, the retention policy will delete a split when `now() - split.time_range.end >= retention_policy.period`
 
 ```yaml
-version: 0.5
+version: 0.6
 index_id: hdfs
 # ...
 retention:

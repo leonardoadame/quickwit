@@ -1,6 +1,6 @@
 ---
 title: Storage URI
-sidebar_position: 5
+sidebar_position: 60
 ---
 
 In Quickwit, Storage URIs refer to different kinds of storage.
@@ -68,18 +68,20 @@ The region or custom endpoint will be detected using the first successful method
 - `AWS_DEFAULT_REGION` environment variable
 - `AWS_REGION` environment variable
 - Amazon’s instance metadata API [https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html)
+- If none of the above methods are provided, Quickwit will default to `us-east-1`.
 
 ## S3-compatible Object Storage
 
 Quickwit can target other S3-compatible storage.
 This is done by setting an endpoint url in the `QW_S3_ENDPOINT` environment variable.
 
-Depending on the object storage, you will also need to set the region.
+Depending on the object storage, you will also need to set the region and force path-style access (Things like self-hosted MinIO instances, which are not behind a domain name.)
 
 Example:
 
 ```bash
 export QW_S3_ENDPOINT=http://localhost:9000/
+export QW_S3_FORCE_PATH_STYLE_ACCESS=true
 ```
 
 ### Google Cloud Storage
@@ -114,6 +116,7 @@ Example for a local garage server:
 
 ```bash
 export QW_S3_ENDPOINT=http://127.0.0.1:3900
+export QW_S3_FORCE_PATH_STYLE_ACCESS=true
 export AWS_REGION=garage
 ```
 
@@ -121,12 +124,11 @@ export AWS_REGION=garage
 
 We support other S3-compatible storages and are [welcoming PRs](http://github.com/quickwit-oss/quickwit) to enrich the documentation with new storage backends.
 
-## Azure blob storage
+## Azure Blob Storage
 
-Quickwit supports Azure URIs formatted as `azure://{storage-account}/{container}/{prefix}` where:
-- `storage-account` is your Azure storage account name. 
-- `container` is the container name (or bucket in S3 parlance).
-- `prefix` is optional and can be any prefix.
+Quickwit supports Azure URIs formatted as `azure://{container}/{prefix}` where:
+- `container` is the container name (also known as "bucket" in S3 terminology).
+- `prefix` is optional and can be any blob prefix.
 
-See our [Azure Setup Guide](../guides/storage-setup/azure-setup.md) for the detailed steps to configure Quickwit with Azure.
+Read our [Azure Setup Guide](../guides/storage-setup/azure-setup.md) for detailed steps to configure Quickwit with Azure.
 

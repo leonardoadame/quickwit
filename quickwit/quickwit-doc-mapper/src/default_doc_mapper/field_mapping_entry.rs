@@ -20,9 +20,13 @@
 use std::convert::TryFrom;
 
 use anyhow::bail;
+use base64::prelude::{Engine, BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tantivy::schema::{IndexRecordOption, JsonObjectOptions, TextFieldIndexing, TextOptions, Type};
+use tantivy::schema::{
+    IndexRecordOption, JsonObjectOptions, TextFieldIndexing, TextOptions, Type,
+    Value as TantivyValue,
+};
 
 use super::date_time_type::QuickwitDateTimeOptions;
 use super::{default_as_true, FieldMappingType};
@@ -103,6 +107,85 @@ impl Default for QuickwitNumericOptions {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuickwitBytesOptions {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default = "default_as_true")]
+    pub stored: bool,
+    #[serde(default = "default_as_true")]
+    pub indexed: bool,
+    #[serde(default)]
+    pub fast: bool,
+    #[serde(default)]
+    pub input_format: BinaryFormat,
+    #[serde(default)]
+    pub output_format: BinaryFormat,
+}
+
+impl Default for QuickwitBytesOptions {
+    fn default() -> Self {
+        Self {
+            description: None,
+            indexed: true,
+            stored: true,
+            fast: false,
+            input_format: BinaryFormat::default(),
+            output_format: BinaryFormat::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryFormat {
+    #[default]
+    Base64,
+    Hex,
+}
+
+impl BinaryFormat {
+    pub fn as_str(&self) -> &str {
+        match self {
+            BinaryFormat::Base64 => "base64",
+            BinaryFormat::Hex => "hex",
+        }
+    }
+
+    pub fn format_to_json(&self, value: &[u8]) -> JsonValue {
+        match self {
+            BinaryFormat::Base64 => BASE64_STANDARD.encode(value).into(),
+            BinaryFormat::Hex => hex::encode(value).into(),
+        }
+    }
+
+    pub fn parse_json(&self, json_val: JsonValue) -> Result<TantivyValue, String> {
+        let byte_str = if let JsonValue::String(byte_str) = json_val {
+            byte_str
+        } else {
+            return Err(format!(
+                "Expected {} string, got `{json_val}`.",
+                self.as_str()
+            ));
+        };
+        let payload = match self {
+            BinaryFormat::Base64 => {
+                BASE64_STANDARD
+                    .decode(&byte_str)
+                    .map_err(|base64_decode_err| {
+                        format!("Expected base64 string, got `{byte_str}`: {base64_decode_err}")
+                    })?
+            }
+            BinaryFormat::Hex => hex::decode(&byte_str).map_err(|hex_decode_err| {
+                format!("Expected hex string, got `{byte_str}`: {hex_decode_err}")
+            })?,
+        };
+        Ok(TantivyValue::Bytes(payload))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QuickwitIpAddrOptions {
@@ -128,7 +211,7 @@ impl Default for QuickwitIpAddrOptions {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub enum QuickwitTextTokenizer {
     #[serde(rename = "raw")]
     Raw,
@@ -147,6 +230,22 @@ impl QuickwitTextTokenizer {
             QuickwitTextTokenizer::Default => "default",
             QuickwitTextTokenizer::StemEn => "en_stem",
             QuickwitTextTokenizer::Chinese => "chinese_compatible",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickwitTextNormalizer {
+    Raw,
+    Lowercase,
+}
+
+impl QuickwitTextNormalizer {
+    pub fn get_name(&self) -> &str {
+        match self {
+            QuickwitTextNormalizer::Raw => "raw",
+            QuickwitTextNormalizer::Lowercase => "lowercase",
         }
     }
 }
@@ -175,11 +274,11 @@ pub struct QuickwitTextOptions {
     pub fast: FastFieldOptions,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(untagged)]
 pub enum FastFieldOptions {
     IsEnabled(bool),
-    EnabledWithTokenizer { tokenizer: String },
+    EnabledWithNormalizer { normalizer: QuickwitTextNormalizer },
 }
 
 impl Default for FastFieldOptions {
@@ -212,8 +311,8 @@ impl From<QuickwitTextOptions> for TextOptions {
             FastFieldOptions::IsEnabled(true) => {
                 text_options = text_options.set_fast(None);
             }
-            FastFieldOptions::EnabledWithTokenizer { tokenizer } => {
-                text_options = text_options.set_fast(Some(tokenizer));
+            FastFieldOptions::EnabledWithNormalizer { normalizer } => {
+                text_options = text_options.set_fast(Some(normalizer.get_name()));
             }
             FastFieldOptions::IsEnabled(false) => {}
         }
@@ -255,7 +354,7 @@ pub enum IndexRecordOptionSchema {
 ///
 /// `QuickwitJsonOptions` is also used to configure
 /// the dynamic mapping.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QuickwitJsonOptions {
     /// Optional description of JSON object.
@@ -286,7 +385,7 @@ pub struct QuickwitJsonOptions {
     pub expand_dots: bool,
     /// If true, the json object will be stored in columnar format.
     #[serde(default)]
-    pub fast: bool,
+    pub fast: FastFieldOptions,
 }
 
 impl Default for QuickwitJsonOptions {
@@ -298,7 +397,7 @@ impl Default for QuickwitJsonOptions {
             record: None,
             stored: true,
             expand_dots: true,
-            fast: false,
+            fast: FastFieldOptions::default(),
         }
     }
 }
@@ -315,7 +414,7 @@ impl From<QuickwitJsonOptions> for JsonObjectOptions {
                 .unwrap_or(IndexRecordOption::Basic);
             let tokenizer = quickwit_json_options
                 .tokenizer
-                .unwrap_or(QuickwitTextTokenizer::Default);
+                .unwrap_or(QuickwitTextTokenizer::Raw);
             let text_field_indexing = TextFieldIndexing::default()
                 .set_tokenizer(tokenizer.get_name())
                 .set_index_option(index_record_option);
@@ -324,8 +423,14 @@ impl From<QuickwitJsonOptions> for JsonObjectOptions {
         if quickwit_json_options.expand_dots {
             json_options = json_options.set_expand_dots_enabled();
         }
-        if quickwit_json_options.fast {
-            json_options = json_options.set_fast();
+        match &quickwit_json_options.fast {
+            FastFieldOptions::IsEnabled(true) => {
+                json_options = json_options.set_fast(None);
+            }
+            FastFieldOptions::EnabledWithNormalizer { normalizer } => {
+                json_options = json_options.set_fast(Some(normalizer.get_name()));
+            }
+            FastFieldOptions::IsEnabled(false) => {}
         }
         json_options
     }
@@ -389,7 +494,7 @@ fn deserialize_mapping_type(
         }
         Type::Facet => unimplemented!("Facet are not supported in quickwit yet."),
         Type::Bytes => {
-            let numeric_options: QuickwitNumericOptions = serde_json::from_value(json)?;
+            let numeric_options: QuickwitBytesOptions = serde_json::from_value(json)?;
             if numeric_options.fast && cardinality == Cardinality::MultiValues {
                 bail!("fast field is not allowed for array<bytes>.");
             }
@@ -451,9 +556,9 @@ fn typed_mapping_to_json_params(
         FieldMappingType::Text(text_options, _) => serialize_to_map(&text_options),
         FieldMappingType::U64(options, _)
         | FieldMappingType::I64(options, _)
-        | FieldMappingType::Bytes(options, _)
         | FieldMappingType::F64(options, _)
         | FieldMappingType::Bool(options, _) => serialize_to_map(&options),
+        FieldMappingType::Bytes(options, _) => serialize_to_map(&options),
         FieldMappingType::IpAddr(options, _) => serialize_to_map(&options),
         FieldMappingType::DateTime(date_time_options, _) => serialize_to_map(&date_time_options),
         FieldMappingType::Json(json_options, _) => serialize_to_map(&json_options),
@@ -488,7 +593,7 @@ mod tests {
     use crate::default_doc_mapper::field_mapping_entry::{
         QuickwitJsonOptions, QuickwitTextOptions, QuickwitTextTokenizer,
     };
-    use crate::default_doc_mapper::FieldMappingType;
+    use crate::default_doc_mapper::{FastFieldOptions, FieldMappingType};
     use crate::Cardinality;
 
     #[test]
@@ -517,13 +622,11 @@ mod tests {
     #[test]
     fn test_tantivy_json_options_from_quickwit_json_options() {
         let tantivy_json_option = JsonObjectOptions::from(QuickwitJsonOptions::default());
-
         assert_eq!(tantivy_json_option.is_stored(), true);
-
         match tantivy_json_option.get_text_indexing_options() {
             Some(text_field_indexing) => {
                 assert_eq!(text_field_indexing.index_option(), IndexRecordOption::Basic);
-                assert_eq!(text_field_indexing.tokenizer(), "default");
+                assert_eq!(text_field_indexing.tokenizer(), "raw");
             }
             _ => panic!("text field indexing is None"),
         }
@@ -916,7 +1019,7 @@ mod tests {
                 "type": "i64",
                 "stored": true,
                 "fast": false,
-                "indexed": true
+                "indexed": true,
             })
         );
         Ok(())
@@ -1002,7 +1105,7 @@ mod tests {
                 "type":"u64",
                 "stored": true,
                 "fast": false,
-                "indexed": true
+                "indexed": true,
             })
         );
     }
@@ -1026,7 +1129,7 @@ mod tests {
                 "type":"f64",
                 "stored": true,
                 "fast": false,
-                "indexed": true
+                "indexed": true,
             })
         );
     }
@@ -1050,7 +1153,7 @@ mod tests {
                 "type": "bool",
                 "stored": true,
                 "fast": false,
-                "indexed": true
+                "indexed": true,
             })
         );
     }
@@ -1107,13 +1210,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_text_fast_field_tokenizer() {
+    fn test_parse_text_fast_field_normalizer() {
         let entry = serde_json::from_str::<FieldMappingEntry>(
             r#"
             {
                 "name": "my_field_name",
                 "type": "text",
-                "fast": {"tokenizer": "lowercase"}
+                "fast": {"normalizer": "lowercase"}
             }
             "#,
         )
@@ -1124,7 +1227,7 @@ mod tests {
             json!({
                 "name": "my_field_name",
                 "type": "text",
-                "fast": {"tokenizer": "lowercase"},
+                "fast": {"normalizer": "lowercase"},
                 "stored": true,
                 "indexed": true,
                 "fieldnorms": false,
@@ -1218,7 +1321,9 @@ mod tests {
             r#"
             {
                 "name": "my_field_name",
-                "type": "bytes"
+                "type": "bytes",
+                "input_format": "hex",
+                "output_format": "base64"
             }
             "#,
         )
@@ -1232,6 +1337,8 @@ mod tests {
                 "stored": true,
                 "indexed": true,
                 "fast": false,
+                "input_format": "hex",
+                "output_format": "base64"
             })
         );
     }
@@ -1256,6 +1363,8 @@ mod tests {
                 "stored": true,
                 "indexed": true,
                 "fast": false,
+                "input_format": "base64",
+                "output_format": "base64"
             })
         );
     }
@@ -1298,7 +1407,7 @@ mod tests {
             tokenizer: None,
             record: None,
             stored: true,
-            fast: false,
+            fast: FastFieldOptions::IsEnabled(false),
             expand_dots: true,
         };
         assert_eq!(&field_mapping_entry.name, "my_json_field");
@@ -1341,7 +1450,7 @@ mod tests {
             record: None,
             stored: false,
             expand_dots: true,
-            fast: false,
+            fast: FastFieldOptions::IsEnabled(false),
         };
         assert_eq!(&field_mapping_entry.name, "my_json_field_multi");
         assert!(
@@ -1371,7 +1480,7 @@ mod tests {
                 "type": "i64",
                 "stored": true,
                 "fast": false,
-                "indexed": true
+                "indexed": true,
             })
         );
     }

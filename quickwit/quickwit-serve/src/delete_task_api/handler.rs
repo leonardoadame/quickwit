@@ -28,7 +28,8 @@ use quickwit_query::query_ast::QueryAst;
 use serde::Deserialize;
 use warp::{Filter, Rejection};
 
-use crate::format::{extract_format_from_qs, make_response};
+use crate::format::extract_format_from_qs;
+use crate::json_api_response::make_json_api_response;
 use crate::with_arg;
 
 #[derive(utoipa::OpenApi)]
@@ -69,7 +70,7 @@ pub fn get_delete_tasks_handler(
         .and(with_arg(metastore))
         .then(get_delete_tasks)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -108,7 +109,7 @@ pub fn post_delete_tasks_handler(
         .and(with_arg(metastore))
         .then(post_delete_request)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -182,6 +183,7 @@ mod tests {
               - name: ts
                 type: i64
                 fast: true
+            mode: lenient
         "#;
         let test_sandbox = TestSandbox::create(index_id, doc_mapping_yaml, "{}", &["body"])
             .await
@@ -193,7 +195,7 @@ mod tests {
             .path("/test-delete-task-rest/delete-tasks")
             .method("POST")
             .json(&true)
-            .body(r#"{"query": "body:term", "start_timestamp": 1, "end_timestamp": 10}"#)
+            .body(r#"{"query": "body:myterm", "start_timestamp": 1, "end_timestamp": 10}"#)
             .reply(&delete_query_api_handlers)
             .await;
         assert_eq!(resp.status(), 200);
@@ -206,7 +208,7 @@ mod tests {
         );
         assert_eq!(
             created_delete_query.query_ast,
-            r#"{"type":"Phrase","field":"body","phrase":"term"}"#
+            r#"{"type":"full_text","field":"body","text":"myterm","params":{"mode":{"type":"phrase_fallback_to_intersection"}}}"#
         );
         assert_eq!(created_delete_query.start_timestamp, Some(1));
         assert_eq!(created_delete_query.end_timestamp, Some(10));

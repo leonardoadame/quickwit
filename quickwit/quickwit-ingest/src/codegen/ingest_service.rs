@@ -164,7 +164,7 @@ impl IngestServiceClient {
     }
     pub fn from_mailbox<A>(mailbox: quickwit_actors::Mailbox<A>) -> Self
     where
-        A: quickwit_actors::Actor + std::fmt::Debug + Send + Sync + 'static,
+        A: quickwit_actors::Actor + std::fmt::Debug + Send + 'static,
         IngestServiceMailbox<A>: IngestService,
     {
         IngestServiceClient::new(IngestServiceMailbox::new(mailbox))
@@ -288,6 +288,7 @@ impl IngestService for IngestServiceTowerBlock {
 }
 #[derive(Debug, Default)]
 pub struct IngestServiceTowerBlockBuilder {
+    #[allow(clippy::type_complexity)]
     ingest_layer: Option<
         quickwit_common::tower::BoxLayer<
             Box<dyn IngestService>,
@@ -296,6 +297,7 @@ pub struct IngestServiceTowerBlockBuilder {
             crate::IngestServiceError,
         >,
     >,
+    #[allow(clippy::type_complexity)]
     fetch_layer: Option<
         quickwit_common::tower::BoxLayer<
             Box<dyn IngestService>,
@@ -304,6 +306,7 @@ pub struct IngestServiceTowerBlockBuilder {
             crate::IngestServiceError,
         >,
     >,
+    #[allow(clippy::type_complexity)]
     tail_layer: Option<
         quickwit_common::tower::BoxLayer<
             Box<dyn IngestService>,
@@ -409,7 +412,7 @@ impl IngestServiceTowerBlockBuilder {
         mailbox: quickwit_actors::Mailbox<A>,
     ) -> IngestServiceClient
     where
-        A: quickwit_actors::Actor + std::fmt::Debug + Send + Sync + 'static,
+        A: quickwit_actors::Actor + std::fmt::Debug + Send + 'static,
         IngestServiceMailbox<A>: IngestService,
     {
         self.build_from_boxed(Box::new(IngestServiceClient::from_mailbox(mailbox)))
@@ -481,11 +484,11 @@ use tower::{Layer, Service, ServiceExt};
 impl<A, M, T, E> tower::Service<M> for IngestServiceMailbox<A>
 where
     A: quickwit_actors::Actor
-        + quickwit_actors::DeferableReplyHandler<M, Reply = Result<T, E>> + Send + Sync
+        + quickwit_actors::DeferableReplyHandler<M, Reply = Result<T, E>> + Send
         + 'static,
     M: std::fmt::Debug + Send + Sync + 'static,
-    T: Send + Sync + 'static,
-    E: std::fmt::Debug + Send + Sync + 'static,
+    T: Send + 'static,
+    E: std::fmt::Debug + Send + 'static,
     crate::IngestServiceError: From<quickwit_actors::AskError<E>>,
 {
     type Response = T;
@@ -610,7 +613,7 @@ impl ingest_service_grpc_server::IngestServiceGrpc for IngestServiceGrpcServerAd
             .ingest(request.into_inner())
             .await
             .map(tonic::Response::new)
-            .map_err(Into::into)
+            .map_err(|error| error.into())
     }
     async fn fetch(
         &self,
@@ -621,7 +624,7 @@ impl ingest_service_grpc_server::IngestServiceGrpc for IngestServiceGrpcServerAd
             .fetch(request.into_inner())
             .await
             .map(tonic::Response::new)
-            .map_err(Into::into)
+            .map_err(|error| error.into())
     }
     async fn tail(
         &self,
@@ -632,7 +635,7 @@ impl ingest_service_grpc_server::IngestServiceGrpc for IngestServiceGrpcServerAd
             .tail(request.into_inner())
             .await
             .map(tonic::Response::new)
-            .map_err(Into::into)
+            .map_err(|error| error.into())
     }
 }
 /// Generated client implementations.
@@ -648,7 +651,7 @@ pub mod ingest_service_grpc_client {
         /// Attempt to create a new client by connecting to a given endpoint.
         pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
         where
-            D: std::convert::TryInto<tonic::transport::Endpoint>,
+            D: TryInto<tonic::transport::Endpoint>,
             D::Error: Into<StdError>,
         {
             let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
@@ -704,6 +707,22 @@ pub mod ingest_service_grpc_client {
             self.inner = self.inner.accept_compressed(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
         /// / Ingests document in a given queue.
         /// /
         /// / Upon any kind of error, the client should
@@ -714,7 +733,7 @@ pub mod ingest_service_grpc_client {
         pub async fn ingest(
             &mut self,
             request: impl tonic::IntoRequest<super::IngestRequest>,
-        ) -> Result<tonic::Response<super::IngestResponse>, tonic::Status> {
+        ) -> std::result::Result<tonic::Response<super::IngestResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -728,7 +747,10 @@ pub mod ingest_service_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ingest_service.IngestService/Ingest",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ingest_service.IngestService", "Ingest"));
+            self.inner.unary(req, path, codec).await
         }
         /// / Fetches record from a given queue.
         /// /
@@ -743,7 +765,7 @@ pub mod ingest_service_grpc_client {
         pub async fn fetch(
             &mut self,
             request: impl tonic::IntoRequest<super::FetchRequest>,
-        ) -> Result<tonic::Response<super::FetchResponse>, tonic::Status> {
+        ) -> std::result::Result<tonic::Response<super::FetchResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -757,7 +779,10 @@ pub mod ingest_service_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ingest_service.IngestService/Fetch",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ingest_service.IngestService", "Fetch"));
+            self.inner.unary(req, path, codec).await
         }
         /// / Returns a batch containing the last records.
         /// /
@@ -767,7 +792,7 @@ pub mod ingest_service_grpc_client {
         pub async fn tail(
             &mut self,
             request: impl tonic::IntoRequest<super::TailRequest>,
-        ) -> Result<tonic::Response<super::FetchResponse>, tonic::Status> {
+        ) -> std::result::Result<tonic::Response<super::FetchResponse>, tonic::Status> {
             self.inner
                 .ready()
                 .await
@@ -781,7 +806,10 @@ pub mod ingest_service_grpc_client {
             let path = http::uri::PathAndQuery::from_static(
                 "/ingest_service.IngestService/Tail",
             );
-            self.inner.unary(request.into_request(), path, codec).await
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("ingest_service.IngestService", "Tail"));
+            self.inner.unary(req, path, codec).await
         }
     }
 }
@@ -802,7 +830,7 @@ pub mod ingest_service_grpc_server {
         async fn ingest(
             &self,
             request: tonic::Request<super::IngestRequest>,
-        ) -> Result<tonic::Response<super::IngestResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::IngestResponse>, tonic::Status>;
         /// / Fetches record from a given queue.
         /// /
         /// / Records are returned in order.
@@ -816,7 +844,7 @@ pub mod ingest_service_grpc_server {
         async fn fetch(
             &self,
             request: tonic::Request<super::FetchRequest>,
-        ) -> Result<tonic::Response<super::FetchResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::FetchResponse>, tonic::Status>;
         /// / Returns a batch containing the last records.
         /// /
         /// / It returns the last documents, from the newest
@@ -825,13 +853,15 @@ pub mod ingest_service_grpc_server {
         async fn tail(
             &self,
             request: tonic::Request<super::TailRequest>,
-        ) -> Result<tonic::Response<super::FetchResponse>, tonic::Status>;
+        ) -> std::result::Result<tonic::Response<super::FetchResponse>, tonic::Status>;
     }
     #[derive(Debug)]
     pub struct IngestServiceGrpcServer<T: IngestServiceGrpc> {
         inner: _Inner<T>,
         accept_compression_encodings: EnabledCompressionEncodings,
         send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
     }
     struct _Inner<T>(Arc<T>);
     impl<T: IngestServiceGrpc> IngestServiceGrpcServer<T> {
@@ -844,6 +874,8 @@ pub mod ingest_service_grpc_server {
                 inner,
                 accept_compression_encodings: Default::default(),
                 send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
             }
         }
         pub fn with_interceptor<F>(
@@ -867,6 +899,22 @@ pub mod ingest_service_grpc_server {
             self.send_compression_encodings.enable(encoding);
             self
         }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
     }
     impl<T, B> tonic::codegen::Service<http::Request<B>> for IngestServiceGrpcServer<T>
     where
@@ -880,7 +928,7 @@ pub mod ingest_service_grpc_server {
         fn poll_ready(
             &mut self,
             _cx: &mut Context<'_>,
-        ) -> Poll<Result<(), Self::Error>> {
+        ) -> Poll<std::result::Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
         fn call(&mut self, req: http::Request<B>) -> Self::Future {
@@ -902,13 +950,15 @@ pub mod ingest_service_grpc_server {
                             &mut self,
                             request: tonic::Request<super::IngestRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).ingest(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -918,6 +968,10 @@ pub mod ingest_service_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -939,13 +993,15 @@ pub mod ingest_service_grpc_server {
                             &mut self,
                             request: tonic::Request<super::FetchRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).fetch(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -955,6 +1011,10 @@ pub mod ingest_service_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -976,13 +1036,15 @@ pub mod ingest_service_grpc_server {
                             &mut self,
                             request: tonic::Request<super::TailRequest>,
                         ) -> Self::Future {
-                            let inner = self.0.clone();
+                            let inner = Arc::clone(&self.0);
                             let fut = async move { (*inner).tail(request).await };
                             Box::pin(fut)
                         }
                     }
                     let accept_compression_encodings = self.accept_compression_encodings;
                     let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
                     let inner = self.inner.clone();
                     let fut = async move {
                         let inner = inner.0;
@@ -992,6 +1054,10 @@ pub mod ingest_service_grpc_server {
                             .apply_compression_config(
                                 accept_compression_encodings,
                                 send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
                         Ok(res)
@@ -1020,12 +1086,14 @@ pub mod ingest_service_grpc_server {
                 inner,
                 accept_compression_encodings: self.accept_compression_encodings,
                 send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
             }
         }
     }
     impl<T: IngestServiceGrpc> Clone for _Inner<T> {
         fn clone(&self) -> Self {
-            Self(self.0.clone())
+            Self(Arc::clone(&self.0))
         }
     }
     impl<T: std::fmt::Debug> std::fmt::Debug for _Inner<T> {

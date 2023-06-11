@@ -117,56 +117,22 @@ impl DefaultDocMapper {
     }
 }
 
-fn validate_tag_fields(tag_fields: &[String], schema: &Schema) -> anyhow::Result<()> {
-    for tag_field in tag_fields {
-        let field = schema.get_field(tag_field)?;
-        let field_type = schema.get_field_entry(field).field_type();
-        match field_type {
-            FieldType::Str(options) => {
-                let tokenizer_opt = options
-                    .get_indexing_options()
-                    .map(|text_options| text_options.tokenizer());
-
-                if tokenizer_opt != Some(QuickwitTextTokenizer::Raw.get_name()) {
-                    bail!(
-                        "Tags collection is only allowed on text fields with the `raw` tokenizer."
-                    );
-                }
-            }
-            FieldType::Bytes(_) => {
-                bail!("Tags collection is not allowed on `bytes` fields.")
-            }
-            _ => (),
-        }
-    }
-    Ok(())
-}
-
-fn validate_timestamp_field_if_any(builder: &DefaultDocMapperBuilder) -> anyhow::Result<()> {
-    let Some(timestamp_field_name) = builder.timestamp_field.as_ref() else {
-        return Ok(());
+fn validate_timestamp_field(
+    timestamp_field_path: &str,
+    mapping_root_node: &MappingNode,
+) -> anyhow::Result<()> {
+    let Some(timestamp_field_type) = mapping_root_node.find_field_mapping_type(timestamp_field_path) else {
+        bail!("Could not find timestamp field `{timestamp_field_path}` in field mappings.");
     };
-    let Some(timestamp_field_entry) = builder.field_mappings.iter().find(|mapping| {
-                &mapping.name == timestamp_field_name
-            }) else {
-                bail!("Missing timestamp field in field mappings: `{}`", timestamp_field_name);
-            };
-    if let FieldMappingType::DateTime(date_time_option, cardinality) =
-        &timestamp_field_entry.mapping_type
-    {
+    if let FieldMappingType::DateTime(date_time_option, cardinality) = &timestamp_field_type {
         if cardinality != &Cardinality::SingleValue {
-            bail!(
-                "Multiple values are forbidden for  the timestamp field \
-                 (`{timestamp_field_name}`)."
-            );
+            bail!("Timestamp field `{timestamp_field_path}` should be single-valued.");
         }
         if !date_time_option.fast {
-            bail!("The timestamp field `{timestamp_field_name}`is required to be a fast field.");
+            bail!("Timestamp field `{timestamp_field_path}` should be a fast field.");
         }
     } else {
-        bail!(
-            "The timestamp field `{timestamp_field_name}` is required to have the datetime type."
-        );
+        bail!("Timestamp field `{timestamp_field_path}` should be a datetime field.");
     }
     Ok(())
 }
@@ -184,7 +150,9 @@ impl TryFrom<DefaultDocMapperBuilder> for DefaultDocMapper {
             None
         };
 
-        validate_timestamp_field_if_any(&builder)?;
+        if let Some(timestamp_field_path) = builder.timestamp_field.as_ref() {
+            validate_timestamp_field(timestamp_field_path, &field_mappings)?;
+        };
 
         let dynamic_field = if let Mode::Dynamic(json_options) = &mode {
             Some(schema_builder.add_json_field(DYNAMIC_FIELD_NAME, json_options.clone()))
@@ -194,36 +162,46 @@ impl TryFrom<DefaultDocMapperBuilder> for DefaultDocMapper {
 
         let schema = schema_builder.build();
 
-        // validate fast fields
-        validate_tag_fields(&builder.tag_fields, &schema)?;
-
         // Resolve default search fields
         let mut default_search_field_names = Vec::new();
-        for field_name in &builder.default_search_fields {
-            if default_search_field_names.contains(field_name) {
-                bail!("Duplicated default search field: `{}`", field_name)
+        for default_search_field_name in &builder.default_search_fields {
+            if default_search_field_names.contains(default_search_field_name) {
+                bail!(
+                    "Duplicated default search field: `{}`",
+                    default_search_field_name
+                )
             }
-            schema
-                .get_field(field_name)
-                .with_context(|| format!("Unknown default search field: `{field_name}`"))?;
-            default_search_field_names.push(field_name.clone());
+            let dynamic_field = schema.get_field(DYNAMIC_FIELD_NAME).ok();
+            let (default_search_field, _json_path) = schema
+                .find_field_with_default(default_search_field_name, dynamic_field)
+                .with_context(|| {
+                    format!("Unknown default search field: `{default_search_field_name}`")
+                })?;
+            if !schema.get_field_entry(default_search_field).is_indexed() {
+                bail!("Default search field `{default_search_field_name}` is not indexed.",);
+            }
+            default_search_field_names.push(default_search_field_name.clone());
         }
 
         // Resolve tag fields
-        let mut tag_field_names: BTreeSet<String> = Default::default();
+        let mut tag_field_names: BTreeSet<String> = builder.tag_fields.iter().cloned().collect();
         for tag_field_name in &builder.tag_fields {
-            if tag_field_names.contains(tag_field_name) {
-                bail!("Duplicated tag field: `{}`", tag_field_name)
+            validate_tag(tag_field_name, &schema)?;
+        }
+
+        let partition_key_expr: &str = builder.partition_key.as_deref().unwrap_or("");
+        let partition_key = RoutingExpr::new(partition_key_expr).with_context(|| {
+            format!("Failed to interpret the partition key: `{partition_key_expr}`")
+        })?;
+
+        // If valid, partition key fields should be considered as tags.
+        for partition_key in partition_key.field_names() {
+            if validate_tag(&partition_key, &schema).is_ok() {
+                tag_field_names.insert(partition_key);
             }
-            schema
-                .get_field(tag_field_name)
-                .with_context(|| format!("Unknown tag field: `{tag_field_name}`"))?;
-            tag_field_names.insert(tag_field_name.clone());
         }
 
         let required_fields = Vec::new();
-        let partition_key = RoutingExpr::new(builder.partition_key.as_deref().unwrap_or(""))
-            .context("Failed to interpret the partition key.")?;
         Ok(DefaultDocMapper {
             schema,
             source_field,
@@ -238,6 +216,52 @@ impl TryFrom<DefaultDocMapperBuilder> for DefaultDocMapper {
             mode,
         })
     }
+}
+
+/// Checks that a given field name is a valid candidate for a tag.
+///
+/// The conditions are:
+/// - the field must be str, u64, or i64
+/// - if str, the field must use the `raw` tokenizer for indexing.
+/// - the field must be indexed.
+fn validate_tag(tag_field_name: &str, schema: &Schema) -> Result<(), anyhow::Error> {
+    let field = schema
+        .get_field(tag_field_name)
+        .with_context(|| format!("Unknown tag field: `{tag_field_name}`"))?;
+    let field_type = schema.get_field_entry(field).field_type();
+    match field_type {
+        FieldType::Str(options) => {
+            let tokenizer_opt = options
+                .get_indexing_options()
+                .map(|text_options| text_options.tokenizer());
+            if tokenizer_opt != Some(QuickwitTextTokenizer::Raw.get_name()) {
+                bail!("Tags collection is only allowed on text fields with the `raw` tokenizer.");
+            }
+        }
+        FieldType::U64(_) | FieldType::I64(_) => {
+            // u64 and i64 are accepted as tags.
+        }
+        _ => {
+            // We avoid the bytes / bool / f64 types,
+            // as they are generally speaking poor tags and we want to avoid
+            // bugs associated to the multiplicity of their representation.
+            //
+            // (Tags are relying heavily on string manipulation and we want to
+            // avoid a "ZRP because you searched you searched for 0.100 instead of 0.1",
+            // or `myflag:1`, `myflag:True` instead of `myflag:true`.
+            bail!(
+                "Tags collection is not allowed on `{}` fields.",
+                field_type.value_type().name().to_lowercase()
+            )
+        }
+    }
+    if !field_type.is_indexed() {
+        bail!(
+            "Tag fields are required to be indexed. (`{}` is not configured as indexed).",
+            tag_field_name
+        )
+    }
+    Ok(())
 }
 
 impl From<DefaultDocMapper> for DefaultDocMapperBuilder {
@@ -403,7 +427,7 @@ mod tests {
 
     use quickwit_proto::query_ast_from_user_text;
     use serde_json::{self, json, Value as JsonValue};
-    use tantivy::schema::{FieldType, Type, Value as TantivyValue};
+    use tantivy::schema::{FieldType, IndexRecordOption, Type, Value as TantivyValue};
 
     use super::DefaultDocMapper;
     use crate::{
@@ -468,7 +492,7 @@ mod tests {
         let schema = doc_mapper.schema();
         // 8 property entry + 1 field "_source" + two fields values for "tags" field
         // + 2 values inf "server.status" field + 2 values in "server.payload" field
-        assert_eq!(document.len(), 15);
+        assert_eq!(document.len(), 16);
         let expected_json_paths_and_values: HashMap<String, JsonValue> =
             serde_json::from_str(EXPECTED_JSON_PATHS_AND_VALUES).unwrap();
         document.field_values().iter().for_each(|field_value| {
@@ -553,20 +577,84 @@ mod tests {
     }
 
     #[test]
-    fn test_fail_to_build_doc_mapper_with_non_datetime_timestamp_field() {
+    fn test_timestamp_field_in_object_is_valid() {
+        serde_json::from_str::<DefaultDocMapper>(
+            r#"{
+            "field_mappings": [
+                {
+                    "name": "some_obj",
+                    "type": "object",
+                    "field_mappings": [
+                        {
+                            "name": "timestamp",
+                            "type": "datetime",
+                            "fast": true
+                        }
+                    ]
+                }
+            ],
+            "timestamp_field": "some_obj.timestamp"
+        }"#,
+        )
+        .unwrap();
+
+        serde_yaml::from_str::<DefaultDocMapper>(
+            r#"
+            field_mappings:
+              - name: some_obj
+                type: object
+                field_mappings:
+                  - name: timestamp
+                    type: datetime
+                    fast: true
+            timestamp_field: some_obj.timestamp
+        "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_timestamp_field_with_dots_in_its_name_is_valid() {
+        serde_json::from_str::<DefaultDocMapper>(
+            r#"{
+            "field_mappings": [
+                {
+                    "name": "my.timestamp",
+                    "type": "datetime",
+                    "fast": true
+                }
+            ],
+            "timestamp_field": "my\\.timestamp"
+        }"#,
+        )
+        .unwrap();
+
+        serde_yaml::from_str::<DefaultDocMapper>(
+            r#"
+            field_mappings:
+              - name: my.timestamp
+                type: datetime
+                fast: true
+            timestamp_field: "my\\.timestamp"
+        "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_fail_to_build_doc_mapper_with_timestamp_field_with_multivalues_cardinality() {
         let doc_mapper = r#"{
-            "default_search_fields": [],
             "timestamp_field": "timestamp",
             "tag_fields": [],
             "field_mappings": [
                 {
                     "name": "timestamp",
-                    "type": "text"
+                    "type": "array<i64>"
                 }
             ]
         }"#;
         let builder = serde_json::from_str::<DefaultDocMapperBuilder>(doc_mapper).unwrap();
-        let expected_msg = "The timestamp field `timestamp` is required to have the datetime type.";
+        let expected_msg = "Timestamp field `timestamp` should be a datetime field.";
         assert_eq!(&builder.try_build().unwrap_err().to_string(), &expected_msg);
     }
 
@@ -585,7 +673,7 @@ mod tests {
             ]
         }"#;
         let builder = serde_json::from_str::<DefaultDocMapperBuilder>(doc_mapper).unwrap();
-        let expected_msg = "The timestamp field `timestamp`is required to be a fast field.";
+        let expected_msg = "Timestamp field `timestamp` should be a fast field.";
         assert_eq!(&builder.try_build().unwrap_err().to_string(), &expected_msg);
     }
 
@@ -658,7 +746,7 @@ mod tests {
         }"#;
 
         let builder = serde_json::from_str::<DefaultDocMapperBuilder>(doc_mapper).unwrap();
-        let expected_msg = "Multiple values are forbidden for  the timestamp field (`timestamp`).";
+        let expected_msg = "Timestamp field `timestamp` should be single-valued.";
         assert_eq!(&builder.try_build().unwrap_err().to_string(), expected_msg);
     }
 
@@ -703,7 +791,7 @@ mod tests {
             "image": "invalid base64 data"
         }"#,
         );
-        let expected_msg = "The field `image` could not be parsed: Expected Base64 string, got \
+        let expected_msg = "The field `image` could not be parsed: Expected base64 string, got \
                             `invalid base64 data`: Invalid byte 32, offset 7.";
         assert_eq!(result.unwrap_err().to_string(), expected_msg);
         Ok(())
@@ -768,6 +856,113 @@ mod tests {
                 assert!(is_value_in_expected_values);
             }
         });
+    }
+
+    #[test]
+    fn test_partition_key_in_tags() {
+        let doc_mapper = r#"{
+            "default_search_fields": [],
+            "timestamp_field": null,
+            "tag_fields": ["city"],
+            "store_source": true,
+            "partition_key": "hash_mod((service,division,city), 50)",
+            "field_mappings": [
+                {
+                    "name": "city",
+                    "type": "text",
+                    "stored": true,
+                    "tokenizer": "raw"
+                },
+                {
+                    "name": "division",
+                    "type": "text",
+                    "stored": true,
+                    "tokenizer": "raw"
+                },
+                {
+                    "name": "service",
+                    "type": "text",
+                    "stored": true,
+                    "tokenizer": "raw"
+                }
+            ]
+        }"#;
+
+        let builder = serde_json::from_str::<DefaultDocMapperBuilder>(doc_mapper).unwrap();
+        let doc_mapper = builder.try_build().unwrap();
+        let tag_fields: Vec<_> = doc_mapper.tag_field_names.into_iter().collect();
+        assert_eq!(tag_fields, vec!["city", "division", "service",]);
+    }
+
+    #[test]
+    fn test_partition_key_in_tags_without_explicit_tags() {
+        let doc_mapper = r#"{
+            "default_search_fields": [],
+            "timestamp_field": null,
+            "store_source": true,
+            "partition_key": "service,hash_mod((division,city), 50)",
+            "field_mappings": [
+                {
+                    "name": "city",
+                    "type": "text",
+                    "stored": true,
+                    "tokenizer": "raw"
+                },
+                {
+                    "name": "division",
+                    "type": "text",
+                    "stored": true,
+                    "tokenizer": "raw"
+                },
+                {
+                    "name": "service",
+                    "type": "text",
+                    "stored": true,
+                    "tokenizer": "raw"
+                }
+            ]
+        }"#;
+
+        let builder = serde_json::from_str::<DefaultDocMapperBuilder>(doc_mapper).unwrap();
+        let doc_mapper = builder.try_build().unwrap();
+        let tag_fields: Vec<_> = doc_mapper.tag_field_names.into_iter().collect();
+        assert_eq!(tag_fields, vec!["city", "division", "service",]);
+    }
+
+    #[test]
+    fn test_build_doc_mapper_with_tag_field_with_dots_in_its_name() {
+        let doc_mapper = r#"{
+            "default_search_fields": [],
+            "tag_fields": ["my\\.city\\.id"],
+            "field_mappings": [
+                {
+                    "name": "my.city.id",
+                    "type": "u64"
+                }
+            ]
+        }"#;
+        serde_json::from_str::<DefaultDocMapper>(doc_mapper).unwrap();
+    }
+
+    #[test]
+    fn test_build_doc_mapper_with_tag_field_in_object() {
+        let doc_mapper = r#"{
+            "default_search_fields": [],
+            "tag_fields": ["location.city"],
+            "field_mappings": [
+                {
+                    "name": "location",
+                    "type": "object",
+                    "field_mappings": [
+                        {
+                            "name": "city",
+                            "type": "u64"
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        serde_json::from_str::<DefaultDocMapper>(doc_mapper).unwrap();
     }
 
     #[test]
@@ -1138,5 +1333,105 @@ mod tests {
             default_doc_mapper_query_aux(&doc_mapper, r#"identity\.username:toto"#).unwrap(),
             r#"TermQuery(Term(field=1, type=Str, "toto"))"#
         );
+    }
+
+    #[test]
+    fn test_doc_mapper_default_tokenizers() {
+        let doc_mapper: DefaultDocMapper = serde_json::from_str(
+            r#"{
+            "field_mappings": [
+                {"name": "json_field", "type": "json"},
+                {"name": "text_field", "type": "text"}
+            ]
+        }"#,
+        )
+        .unwrap();
+        let schema = doc_mapper.schema();
+
+        {
+            let json_field = schema.get_field("json_field").unwrap();
+            let FieldType::JsonObject(json_options) = schema.get_field_entry(json_field).field_type()
+        else { panic!() };
+            let text_indexing_options = json_options.get_text_indexing_options().unwrap();
+            assert_eq!(
+                text_indexing_options.tokenizer(),
+                super::QuickwitTextTokenizer::Raw.get_name()
+            );
+            assert_eq!(
+                text_indexing_options.index_option(),
+                IndexRecordOption::Basic
+            );
+        }
+
+        {
+            let text_field = schema.get_field("text_field").unwrap();
+            let FieldType::Str(text_options) = schema.get_field_entry(text_field).field_type()
+        else { panic!() };
+            assert_eq!(
+                text_options.get_indexing_options().unwrap().tokenizer(),
+                super::QuickwitTextTokenizer::Default.get_name()
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_field_mapping_type() {
+        let mapper = serde_json::from_str::<DefaultDocMapper>(
+            r#"{
+            "field_mappings": [
+                {
+                    "name": "some_obj",
+                    "type": "object",
+                    "field_mappings": [
+                        {
+                            "name": "timestamp",
+                            "type": "datetime",
+                            "fast": true
+                        },
+                        {
+                            "name": "object2",
+                            "type": "object",
+                            "field_mappings": [
+                                {
+                                    "name": "id",
+                                    "type": "u64"
+                                },
+                                {
+                                    "name": "my.id",
+                                    "type": "u64"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "my.timestamp",
+                    "type": "datetime",
+                    "fast": true
+                }
+            ]
+        }"#,
+        )
+        .unwrap();
+        mapper
+            .field_mappings
+            .find_field_mapping_type("some_obj.timestamp")
+            .unwrap();
+        mapper
+            .field_mappings
+            .find_field_mapping_type("some_obj.object2.id")
+            .unwrap();
+        mapper
+            .field_mappings
+            .find_field_mapping_type("some_obj.object2")
+            .unwrap();
+        mapper
+            .field_mappings
+            .find_field_mapping_type("some_obj.object2.my\\.id")
+            .unwrap();
+        mapper
+            .field_mappings
+            .find_field_mapping_type("my\\.timestamp")
+            .unwrap();
     }
 }

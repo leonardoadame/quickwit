@@ -26,6 +26,7 @@ use quickwit_actors::{
     Actor, ActorContext, ActorExitStatus, ActorHandle, Handler, Health, Mailbox, QueueCapacity,
     Supervisable,
 };
+use quickwit_common::temp_dir::TempDirectory;
 use quickwit_common::KillSwitch;
 use quickwit_config::{IndexingSettings, SourceConfig};
 use quickwit_doc_mapper::DocMapper;
@@ -42,10 +43,12 @@ use crate::actors::publisher::PublisherType;
 use crate::actors::sequencer::Sequencer;
 use crate::actors::uploader::UploaderType;
 use crate::actors::{Indexer, Packager, Publisher, Uploader};
-use crate::models::{IndexingPipelineId, IndexingStatistics, Observe, ScratchDirectory};
+use crate::models::{IndexingPipelineId, IndexingStatistics, Observe};
 use crate::source::{quickwit_supported_sources, SourceActor, SourceExecutionContext};
 use crate::split_store::IndexingSplitStore;
 use crate::SplitsUpdateMailbox;
+
+const OBSERVE_INTERVAL: Duration = Duration::from_secs(1);
 
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(600); // 10 min.
 
@@ -331,6 +334,7 @@ impl IndexingPipeline {
             self.params.metastore.clone(),
             self.params.indexing_directory.clone(),
             self.params.indexing_settings.clone(),
+            self.params.cooperative_indexing_permits.clone(),
             index_serializer_mailbox,
         );
         let (indexer_mailbox, indexer_handle) = ctx
@@ -349,6 +353,7 @@ impl IndexingPipeline {
             self.params.doc_mapper.clone(),
             indexer_mailbox,
             self.params.source_config.transform_config.clone(),
+            self.params.source_config.input_format.clone(),
         )?;
         let (doc_processor_mailbox, doc_processor_handle) = ctx
             .spawn_actor()
@@ -373,7 +378,7 @@ impl IndexingPipeline {
             .protect_future(quickwit_supported_sources().load_source(
                 Arc::new(SourceExecutionContext {
                     metastore: self.params.metastore.clone(),
-                    index_id: self.params.pipeline_id.index_uid.index_id().to_string(),
+                    index_uid: self.params.pipeline_id.index_uid.clone(),
                     queues_dir_path: self.params.queues_dir_path.clone(),
                     source_config: self.params.source_config.clone(),
                 }),
@@ -447,7 +452,7 @@ impl Handler<Observe> for IndexingPipeline {
                 .set_generation(self.statistics.generation)
                 .set_num_spawn_attempts(self.statistics.num_spawn_attempts);
         }
-        ctx.schedule_self_msg(Duration::from_secs(1), Observe).await;
+        ctx.schedule_self_msg(OBSERVE_INTERVAL, Observe).await;
         Ok(())
     }
 }
@@ -466,7 +471,7 @@ impl Handler<Supervise> for IndexingPipeline {
                 Health::Healthy => {}
                 Health::FailureOrUnhealthy => {
                     self.terminate().await;
-                    ctx.schedule_self_msg(quickwit_actors::HEARTBEAT, Spawn { retry_count: 0 })
+                    ctx.schedule_self_msg(*quickwit_actors::HEARTBEAT, Spawn { retry_count: 0 })
                         .await;
                 }
                 Health::Success => {
@@ -474,7 +479,7 @@ impl Handler<Supervise> for IndexingPipeline {
                 }
             }
         }
-        ctx.schedule_self_msg(quickwit_actors::HEARTBEAT, Supervise)
+        ctx.schedule_self_msg(*quickwit_actors::HEARTBEAT, Supervise)
             .await;
         Ok(())
     }
@@ -517,7 +522,7 @@ impl Handler<Spawn> for IndexingPipeline {
 pub struct IndexingPipelineParams {
     pub pipeline_id: IndexingPipelineId,
     pub doc_mapper: Arc<dyn DocMapper>,
-    pub indexing_directory: ScratchDirectory,
+    pub indexing_directory: TempDirectory,
     pub queues_dir_path: PathBuf,
     pub indexing_settings: IndexingSettings,
     pub source_config: SourceConfig,
@@ -526,6 +531,7 @@ pub struct IndexingPipelineParams {
     pub split_store: IndexingSplitStore,
     pub max_concurrent_split_uploads_index: usize,
     pub max_concurrent_split_uploads_merge: usize,
+    pub cooperative_indexing_permits: Option<Arc<Semaphore>>,
     pub merge_planner_mailbox: Mailbox<MergePlanner>,
 }
 
@@ -536,7 +542,7 @@ mod tests {
     use std::sync::Arc;
 
     use quickwit_actors::{Command, Universe};
-    use quickwit_config::{IndexingSettings, SourceParams, VoidSourceParams};
+    use quickwit_config::{IndexingSettings, SourceInputFormat, SourceParams, VoidSourceParams};
     use quickwit_doc_mapper::{default_doc_mapper_for_test, DefaultDocMapper};
     use quickwit_metastore::{IndexMetadata, MetastoreError, MockMetastore};
     use quickwit_proto::IndexUid;
@@ -545,7 +551,6 @@ mod tests {
     use super::{IndexingPipeline, *};
     use crate::actors::merge_pipeline::{MergePipeline, MergePipelineParams};
     use crate::merge_policy::default_merge_policy;
-    use crate::models::ScratchDirectory;
 
     #[test]
     fn test_wait_duration() {
@@ -588,7 +593,7 @@ mod tests {
         metastore
             .expect_stage_splits()
             .withf(|index_uid, _metadata| -> bool {
-                index_uid.to_string() == "test-index:1111111111111"
+                index_uid.to_string() == "test-index:11111111111111111111111111"
             })
             .returning(|_, _| Ok(()));
         metastore
@@ -596,7 +601,7 @@ mod tests {
             .withf(
                 |index_uid, splits, replaced_splits, checkpoint_delta_opt| -> bool {
                     let checkpoint_delta = checkpoint_delta_opt.as_ref().unwrap();
-                    index_uid.to_string() == "test-index:1111111111111"
+                    index_uid.to_string() == "test-index:11111111111111111111111111"
                         && checkpoint_delta.source_id == "test-source"
                         && splits.len() == 1
                         && replaced_splits.is_empty()
@@ -608,7 +613,7 @@ mod tests {
         let node_id = "test-node";
         let metastore = Arc::new(metastore);
         let pipeline_id = IndexingPipelineId {
-            index_uid: "test-index:1111111111111".to_string().into(),
+            index_uid: "test-index:11111111111111111111111111".to_string().into(),
             source_id: "test-source".to_string(),
             node_id: node_id.to_string(),
             pipeline_ord: 0,
@@ -620,6 +625,7 @@ mod tests {
             enabled: true,
             source_params: SourceParams::file(PathBuf::from("data/test_corpus.json")),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
         let storage = Arc::new(RamStorage::default());
         let split_store = IndexingSplitStore::create_without_local_store(storage.clone());
@@ -628,7 +634,7 @@ mod tests {
             pipeline_id,
             doc_mapper: Arc::new(default_doc_mapper_for_test()),
             source_config,
-            indexing_directory: ScratchDirectory::for_test(),
+            indexing_directory: TempDirectory::for_test(),
             indexing_settings: IndexingSettings::for_test(),
             metastore: metastore.clone(),
             storage,
@@ -636,6 +642,7 @@ mod tests {
             queues_dir_path: PathBuf::from("./queues"),
             max_concurrent_split_uploads_index: 4,
             max_concurrent_split_uploads_merge: 5,
+            cooperative_indexing_permits: None,
             merge_planner_mailbox,
         };
         let pipeline = IndexingPipeline::new(pipeline_params);
@@ -678,14 +685,16 @@ mod tests {
             });
         metastore
             .expect_stage_splits()
-            .withf(|index_uid, _metadata| index_uid.to_string() == "test-index:1111111111111")
+            .withf(|index_uid, _metadata| {
+                index_uid.to_string() == "test-index:11111111111111111111111111"
+            })
             .returning(|_, _| Ok(()));
         metastore
             .expect_publish_splits()
             .withf(
                 |index_uid, splits, replaced_split_ids, checkpoint_delta_opt| -> bool {
                     let checkpoint_delta = checkpoint_delta_opt.as_ref().unwrap();
-                    index_uid.to_string() == "test-index:1111111111111"
+                    index_uid.to_string() == "test-index:11111111111111111111111111"
                         && splits.len() == 1
                         && replaced_split_ids.is_empty()
                         && checkpoint_delta.source_id == "test-source"
@@ -698,7 +707,7 @@ mod tests {
         let node_id = "test-node";
         let metastore = Arc::new(metastore);
         let pipeline_id = IndexingPipelineId {
-            index_uid: "test-index:1111111111111".to_string().into(),
+            index_uid: "test-index:11111111111111111111111111".to_string().into(),
             source_id: "test-source".to_string(),
             node_id: node_id.to_string(),
             pipeline_ord: 0,
@@ -710,6 +719,7 @@ mod tests {
             enabled: true,
             source_params: SourceParams::file(PathBuf::from("data/test_corpus.json")),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
         let storage = Arc::new(RamStorage::default());
         let split_store = IndexingSplitStore::create_without_local_store(storage.clone());
@@ -718,7 +728,7 @@ mod tests {
             pipeline_id,
             doc_mapper: Arc::new(default_doc_mapper_for_test()),
             source_config,
-            indexing_directory: ScratchDirectory::for_test(),
+            indexing_directory: TempDirectory::for_test(),
             indexing_settings: IndexingSettings::for_test(),
             metastore: metastore.clone(),
             queues_dir_path: PathBuf::from("./queues"),
@@ -726,6 +736,7 @@ mod tests {
             split_store,
             max_concurrent_split_uploads_index: 4,
             max_concurrent_split_uploads_merge: 5,
+            cooperative_indexing_permits: None,
             merge_planner_mailbox,
         };
         let pipeline = IndexingPipeline::new(pipeline_params);
@@ -769,13 +780,14 @@ mod tests {
             enabled: true,
             source_params: SourceParams::Void(VoidSourceParams),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
         let storage = Arc::new(RamStorage::default());
         let split_store = IndexingSplitStore::create_without_local_store(storage.clone());
         let merge_pipeline_params = MergePipelineParams {
             pipeline_id: pipeline_id.clone(),
             doc_mapper: doc_mapper.clone(),
-            indexing_directory: ScratchDirectory::for_test(),
+            indexing_directory: TempDirectory::for_test(),
             metastore: metastore.clone(),
             split_store: split_store.clone(),
             merge_policy: default_merge_policy(),
@@ -790,7 +802,7 @@ mod tests {
             pipeline_id,
             doc_mapper,
             source_config,
-            indexing_directory: ScratchDirectory::for_test(),
+            indexing_directory: TempDirectory::for_test(),
             indexing_settings: IndexingSettings::for_test(),
             metastore: metastore.clone(),
             queues_dir_path: PathBuf::from("./queues"),
@@ -798,6 +810,7 @@ mod tests {
             split_store,
             max_concurrent_split_uploads_index: 4,
             max_concurrent_split_uploads_merge: 5,
+            cooperative_indexing_permits: None,
             merge_planner_mailbox: merge_planner_mailbox.clone(),
         };
         let indexing_pipeline = IndexingPipeline::new(indexing_pipeline_params);
@@ -812,7 +825,7 @@ mod tests {
         let indexer = universe.get::<Indexer>().into_iter().next().unwrap();
         let _ = indexer.ask(Command::Quit).await;
         for _ in 0..10 {
-            universe.sleep(quickwit_actors::HEARTBEAT).await;
+            universe.sleep(*quickwit_actors::HEARTBEAT).await;
             // Check indexing pipeline has restarted.
             let obs = indexing_pipeline_handler
                 .process_pending_and_observe()
@@ -853,7 +866,7 @@ mod tests {
             .withf(
                 |index_uid, splits, replaced_split_ids, checkpoint_delta_opt| -> bool {
                     let checkpoint_delta = checkpoint_delta_opt.as_ref().unwrap();
-                    index_uid.to_string() == "test-index:1111111111111"
+                    index_uid.to_string() == "test-index:11111111111111111111111111"
                         && splits.is_empty()
                         && replaced_split_ids.is_empty()
                         && checkpoint_delta.source_id == "test-source"
@@ -862,11 +875,11 @@ mod tests {
                 },
             )
             .returning(|_, _, _, _| Ok(()));
-        let universe = Universe::with_accelerated_time();
+        let universe = Universe::new();
         let node_id = "test-node";
         let metastore = Arc::new(metastore);
         let pipeline_id = IndexingPipelineId {
-            index_uid: "test-index:1111111111111".to_string().into(),
+            index_uid: "test-index:11111111111111111111111111".to_string().into(),
             source_id: "test-source".to_string(),
             node_id: node_id.to_string(),
             pipeline_ord: 0,
@@ -878,6 +891,7 @@ mod tests {
             enabled: true,
             source_params: SourceParams::file(PathBuf::from("data/test_corpus.json")),
             transform_config: None,
+            input_format: SourceInputFormat::Json,
         };
         let storage = Arc::new(RamStorage::default());
         let split_store = IndexingSplitStore::create_without_local_store(storage.clone());
@@ -904,7 +918,7 @@ mod tests {
             pipeline_id,
             doc_mapper: Arc::new(broken_mapper),
             source_config,
-            indexing_directory: ScratchDirectory::for_test(),
+            indexing_directory: TempDirectory::for_test(),
             indexing_settings: IndexingSettings::for_test(),
             metastore: metastore.clone(),
             queues_dir_path: PathBuf::from("./queues"),
@@ -912,6 +926,7 @@ mod tests {
             split_store,
             max_concurrent_split_uploads_index: 4,
             max_concurrent_split_uploads_merge: 5,
+            cooperative_indexing_permits: None,
             merge_planner_mailbox,
         };
         let pipeline = IndexingPipeline::new(pipeline_params);

@@ -35,7 +35,8 @@ use tracing::warn;
 
 use crate::quickwit_config::serialize::load_quickwit_config_with_env;
 use crate::service::QuickwitService;
-use crate::ConfigFormat;
+use crate::storage_config::StorageConfigs;
+use crate::{ConfigFormat, MetastoreConfigs};
 
 pub const DEFAULT_QW_CONFIG_PATH: &str = "config/quickwit.yaml";
 
@@ -52,11 +53,24 @@ pub struct IndexerConfig {
     /// Protocol (OTLP).
     #[serde(default = "IndexerConfig::default_enable_otlp_endpoint")]
     pub enable_otlp_endpoint: bool,
+    #[serde(default = "IndexerConfig::default_enable_cooperative_indexing")]
+    pub enable_cooperative_indexing: bool,
 }
 
 impl IndexerConfig {
+    fn default_enable_cooperative_indexing() -> bool {
+        false
+    }
+
     fn default_enable_otlp_endpoint() -> bool {
-        !(cfg!(feature = "test") || cfg!(feature = "testsuite"))
+        #[cfg(any(test, feature = "testsuite"))]
+        {
+            false
+        }
+        #[cfg(not(any(test, feature = "testsuite")))]
+        {
+            true
+        }
     }
 
     fn default_max_concurrent_split_uploads() -> usize {
@@ -74,6 +88,7 @@ impl IndexerConfig {
     #[cfg(any(test, feature = "testsuite"))]
     pub fn for_test() -> anyhow::Result<Self> {
         let indexer_config = IndexerConfig {
+            enable_cooperative_indexing: false,
             enable_otlp_endpoint: true,
             split_store_max_num_bytes: Byte::from_bytes(1_000_000),
             split_store_max_num_splits: 3,
@@ -86,6 +101,7 @@ impl IndexerConfig {
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
+            enable_cooperative_indexing: Self::default_enable_cooperative_indexing(),
             enable_otlp_endpoint: Self::default_enable_otlp_endpoint(),
             split_store_max_num_bytes: Self::default_split_store_max_num_bytes(),
             split_store_max_num_splits: Self::default_split_store_max_num_splits(),
@@ -171,7 +187,14 @@ impl JaegerConfig {
     }
 
     fn default_enable_endpoint() -> bool {
-        !(cfg!(feature = "test") || cfg!(feature = "testsuite"))
+        #[cfg(any(test, feature = "testsuite"))]
+        {
+            false
+        }
+        #[cfg(not(any(test, feature = "testsuite")))]
+        {
+            true
+        }
     }
 
     fn default_lookback_period_hours() -> NonZeroU64 {
@@ -213,6 +236,8 @@ pub struct QuickwitConfig {
     pub metastore_uri: Uri,
     pub default_index_root_uri: Uri,
     pub rest_cors_allow_origins: Vec<String>,
+    pub storage_configs: StorageConfigs,
+    pub metastore_configs: MetastoreConfigs,
     pub indexer_config: IndexerConfig,
     pub searcher_config: SearcherConfig,
     pub ingest_api_config: IngestApiConfig,
@@ -259,6 +284,12 @@ impl QuickwitConfig {
             )
         }
         Ok(peer_seed_addrs)
+    }
+
+    pub fn redact(&mut self) {
+        self.metastore_uri.redact();
+        self.storage_configs.redact();
+        self.metastore_configs.redact();
     }
 
     #[cfg(any(test, feature = "testsuite"))]

@@ -38,7 +38,8 @@ use thiserror::Error;
 use tracing::info;
 use warp::{Filter, Rejection};
 
-use crate::format::{extract_format_from_qs, make_response};
+use crate::format::extract_format_from_qs;
+use crate::json_api_response::make_json_api_response;
 use crate::simple_list::{from_simple_list, to_simple_list};
 use crate::with_arg;
 
@@ -123,7 +124,7 @@ fn get_index_metadata_handler(
         .and(with_arg(metastore))
         .then(get_index_metadata)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 async fn get_index_metadata(
@@ -142,7 +143,7 @@ fn get_indexes_metadatas_handler(
         .and(with_arg(metastore))
         .then(get_indexes_metadatas)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 /// Describes an index with its main information and statistics.
@@ -152,8 +153,9 @@ struct IndexStats {
     #[schema(value_type = String)]
     pub index_uri: Uri,
     pub num_published_splits: usize,
+    pub size_published_splits: u64,
     pub num_published_docs: u64,
-    pub size_published_docs: u64,
+    pub size_published_docs_uncompressed: u64,
     pub timestamp_field_name: Option<String>,
     pub min_timestamp: Option<i64>,
     pub max_timestamp: Option<i64>,
@@ -184,13 +186,15 @@ async fn describe_index(
         .filter(|split| split.split_state == SplitState::Published)
         .collect();
     let mut total_num_docs = 0;
-    let mut total_bytes = 0;
+    let mut total_num_bytes = 0;
+    let mut total_uncompressed_num_bytes = 0;
     let mut min_timestamp: Option<i64> = None;
     let mut max_timestamp: Option<i64> = None;
 
     for split in &published_splits {
         total_num_docs += split.split_metadata.num_docs as u64;
-        total_bytes += split.split_metadata.footer_offsets.end;
+        total_num_bytes += split.split_metadata.footer_offsets.end;
+        total_uncompressed_num_bytes += split.split_metadata.uncompressed_docs_size_in_bytes;
 
         if let Some(time_range) = &split.split_metadata.time_range {
             min_timestamp = min_timestamp
@@ -207,8 +211,9 @@ async fn describe_index(
         index_id,
         index_uri: index_config.index_uri.clone(),
         num_published_splits: published_splits.len(),
+        size_published_splits: total_num_bytes,
         num_published_docs: total_num_docs,
-        size_published_docs: total_bytes,
+        size_published_docs_uncompressed: total_uncompressed_num_bytes,
         timestamp_field_name: index_config.doc_mapping.timestamp_field,
         min_timestamp,
         max_timestamp,
@@ -225,7 +230,7 @@ fn describe_index_handler(
         .and(with_arg(metastore))
         .then(describe_index)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 /// This struct represents the QueryString passed to
@@ -301,7 +306,7 @@ fn list_splits_handler(
         .and(with_arg(metastore))
         .then(list_splits)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -349,7 +354,7 @@ fn mark_splits_for_deletion_handler(
         .and(with_arg(metastore))
         .then(mark_splits_for_deletion)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -390,7 +395,7 @@ fn create_index_handler(
         .and(with_arg(quickwit_config))
         .then(create_index)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -434,7 +439,7 @@ fn clear_index_handler(
         .and(with_arg(index_service))
         .then(clear_index)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -474,7 +479,7 @@ fn delete_index_handler(
         .and(with_arg(index_service))
         .then(delete_index)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -513,7 +518,7 @@ fn create_source_handler(
         .and(with_arg(index_service))
         .then(create_source)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -563,7 +568,7 @@ fn get_source_handler(
         .and(with_arg(metastore))
         .then(get_source)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 async fn get_source(
@@ -592,7 +597,7 @@ fn reset_source_checkpoint_handler(
         .and(with_arg(metastore))
         .then(reset_source_checkpoint)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -629,7 +634,7 @@ fn toggle_source_handler(
         .and(with_arg(metastore))
         .then(toggle_source)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -680,7 +685,7 @@ fn delete_source_handler(
         .and(with_arg(metastore))
         .then(delete_source)
         .and(extract_format_from_qs())
-        .map(make_response)
+        .map(make_json_api_response)
 }
 
 #[utoipa::path(
@@ -718,33 +723,16 @@ mod tests {
     use std::ops::{Bound, RangeInclusive};
 
     use assert_json_diff::assert_json_include;
-    use quickwit_common::uri::{Protocol, Uri};
+    use quickwit_common::uri::Uri;
     use quickwit_config::{SourceParams, VecSourceParams};
     use quickwit_indexing::mock_split;
-    use quickwit_metastore::file_backed_metastore::FileBackedMetastoreFactory;
-    use quickwit_metastore::{
-        IndexMetadata, Metastore, MetastoreError, MetastoreUriResolver, MockMetastore,
-    };
-    use quickwit_storage::StorageUriResolver;
+    use quickwit_metastore::{metastore_for_test, IndexMetadata, MetastoreError, MockMetastore};
+    use quickwit_storage::StorageResolver;
     use serde::__private::from_utf8_lossy;
     use serde_json::Value as JsonValue;
 
     use super::*;
     use crate::recover_fn;
-
-    async fn build_metastore_for_test() -> Arc<dyn Metastore> {
-        let storage_resolver = StorageUriResolver::for_test();
-        let metastore_uri_resolver = MetastoreUriResolver::builder()
-            .register(
-                Protocol::Ram,
-                FileBackedMetastoreFactory::new(storage_resolver.clone()),
-            )
-            .build();
-        metastore_uri_resolver
-            .resolve(&Uri::from_well_formed("ram://quickwit-test-indexes"))
-            .await
-            .unwrap()
-    }
 
     #[tokio::test]
     async fn test_get_index() -> anyhow::Result<()> {
@@ -757,7 +745,7 @@ mod tests {
                     "ram:///indexes/test-index",
                 ))
             });
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -782,8 +770,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_non_existing_index() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore, StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore, StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -826,7 +814,7 @@ mod tests {
                 })
             })
             .times(2);
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -893,7 +881,7 @@ mod tests {
                 })
             });
 
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -910,8 +898,9 @@ mod tests {
             "index_id": "test-index",
             "index_uri": "ram:///indexes/test-index",
             "num_published_splits": 2,
+            "size_published_splits": 1600,
             "num_published_docs": 20,
-            "size_published_docs": 1600,
+            "size_published_docs_uncompressed": 512,
             "timestamp_field_name": "timestamp",
             "min_timestamp": split_1_time_range.start() - 10,
             "max_timestamp": split_1_time_range.end() + 10,
@@ -947,7 +936,7 @@ mod tests {
                     cause: "".to_string(),
                 })
             });
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -986,7 +975,7 @@ mod tests {
                 })
             })
             .times(2);
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1020,7 +1009,7 @@ mod tests {
                 "ram:///indexes/test-index",
             )])
         });
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1069,7 +1058,7 @@ mod tests {
         metastore
             .expect_reset_source_checkpoint()
             .return_once(|_index_id: IndexUid, _source_id: &str| Ok(()));
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1112,7 +1101,7 @@ mod tests {
         metastore
             .expect_delete_index()
             .return_once(|_index_uid: IndexUid| Ok(()));
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1151,8 +1140,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_on_non_existing_index() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore, StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore, StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1168,8 +1157,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_index_with_overwrite() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore.clone(), StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore.clone(), StorageResolver::unconfigured());
         let mut quickwit_config = QuickwitConfig::for_test();
         quickwit_config.default_index_root_uri =
             Uri::from_well_formed("file:///default-index-root-uri");
@@ -1180,7 +1169,7 @@ mod tests {
                 .path("/indexes?overwrite=true")
                 .method("POST")
                 .json(&true)
-                .body(r#"{"version": "0.5", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
+                .body(r#"{"version": "0.6", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
                 .reply(&index_management_handler)
                 .await;
             assert_eq!(resp.status(), 200);
@@ -1190,7 +1179,7 @@ mod tests {
                 .path("/indexes?overwrite=true")
                 .method("POST")
                 .json(&true)
-                .body(r#"{"version": "0.5", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
+                .body(r#"{"version": "0.6", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
                 .reply(&index_management_handler)
                 .await;
             assert_eq!(resp.status(), 200);
@@ -1200,7 +1189,7 @@ mod tests {
                 .path("/indexes")
                 .method("POST")
                 .json(&true)
-                .body(r#"{"version": "0.5", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
+                .body(r#"{"version": "0.6", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
                 .reply(&index_management_handler)
                 .await;
             assert_eq!(resp.status(), 400);
@@ -1209,8 +1198,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_delete_index_and_source() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore.clone(), StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore.clone(), StorageResolver::unconfigured());
         let mut quickwit_config = QuickwitConfig::for_test();
         quickwit_config.default_index_root_uri =
             Uri::from_well_formed("file:///default-index-root-uri");
@@ -1220,7 +1209,7 @@ mod tests {
             .path("/indexes")
             .method("POST")
             .json(&true)
-            .body(r#"{"version": "0.5", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
+            .body(r#"{"version": "0.6", "index_id": "hdfs-logs", "doc_mapping": {"field_mappings":[{"name": "timestamp", "type": "i64", "fast": true, "indexed": true}]}}"#)
             .reply(&index_management_handler)
             .await;
         assert_eq!(resp.status(), 200);
@@ -1234,7 +1223,7 @@ mod tests {
         assert_json_include!(actual: resp_json, expected: expected_response_json);
 
         // Create source.
-        let source_config_body = r#"{"version": "0.5", "source_id": "vec-source", "source_type": "vec", "params": {"docs": [], "batch_num_docs": 10}}"#;
+        let source_config_body = r#"{"version": "0.6", "source_id": "vec-source", "source_type": "vec", "params": {"docs": [], "batch_num_docs": 10}}"#;
         let resp = warp::test::request()
             .path("/indexes/hdfs-logs/sources")
             .method("POST")
@@ -1317,15 +1306,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_file_source_returns_405() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore.clone(), StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore.clone(), StorageResolver::unconfigured());
         let mut quickwit_config = QuickwitConfig::for_test();
         quickwit_config.default_index_root_uri =
             Uri::from_well_formed("file:///default-index-root-uri");
         let index_management_handler =
             super::index_management_handlers(Arc::new(index_service), Arc::new(quickwit_config))
                 .recover(recover_fn);
-        let source_config_body = r#"{"version": "0.5", "source_id": "file-source", "source_type": "file", "params": {"filepath": "FILEPATH"}}"#;
+        let source_config_body = r#"{"version": "0.6", "source_id": "file-source", "source_type": "file", "params": {"filepath": "FILEPATH"}}"#;
         let resp = warp::test::request()
             .path("/indexes/hdfs-logs/sources")
             .method("POST")
@@ -1339,8 +1328,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_index_with_yaml() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore.clone(), StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore.clone(), StorageResolver::unconfigured());
         let mut quickwit_config = QuickwitConfig::for_test();
         quickwit_config.default_index_root_uri =
             Uri::from_well_formed("file:///default-index-root-uri");
@@ -1353,7 +1342,7 @@ mod tests {
             .header("content-type", "application/yaml")
             .body(
                 r#"
-            version: 0.5
+            version: 0.6
             index_id: hdfs-logs
             doc_mapping:
               field_mappings:
@@ -1378,8 +1367,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_index_and_source_with_toml() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore.clone(), StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore.clone(), StorageResolver::unconfigured());
         let mut quickwit_config = QuickwitConfig::for_test();
         quickwit_config.default_index_root_uri =
             Uri::from_well_formed("file:///default-index-root-uri");
@@ -1392,7 +1381,7 @@ mod tests {
             .header("content-type", "application/toml")
             .body(
                 r#"
-            version = "0.5"
+            version = "0.6"
             index_id = "hdfs-logs"
             [doc_mapping]
             field_mappings = [
@@ -1415,8 +1404,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_index_with_wrong_content_type() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore.clone(), StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore.clone(), StorageResolver::unconfigured());
         let mut quickwit_config = QuickwitConfig::for_test();
         quickwit_config.default_index_root_uri =
             Uri::from_well_formed("file:///default-index-root-uri");
@@ -1438,7 +1427,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_index_with_bad_config() -> anyhow::Result<()> {
         let metastore = MockMetastore::new();
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1449,7 +1438,7 @@ mod tests {
             .method("POST")
             .json(&true)
             .body(
-                r#"{"version": "0.5", "index_id": "hdfs-log", "doc_mapping":
+                r#"{"version": "0.6", "index_id": "hdfs-log", "doc_mapping":
     {"field_mappings":[{"name": "timestamp", "type": "unknown", "fast": true, "indexed":
     true}]}}"#,
             )
@@ -1463,8 +1452,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_source_with_bad_config() {
-        let metastore = build_metastore_for_test().await;
-        let index_service = IndexService::new(metastore, StorageUriResolver::for_test());
+        let metastore = metastore_for_test();
+        let index_service = IndexService::new(metastore, StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1489,7 +1478,7 @@ mod tests {
                 .path("/indexes/my-index/sources")
                 .method("POST")
                 .json(&true)
-                .body(r#"{"version": "0.5", "source_id": "pulsar-source", "desired_num_pipelines": 2, "source_type": "pulsar", "params": {"topics": ["my-topic"], "address": "pulsar://localhost:6650" }}"#)
+                .body(r#"{"version": "0.6", "source_id": "pulsar-source", "desired_num_pipelines": 2, "source_type": "pulsar", "params": {"topics": ["my-topic"], "address": "pulsar://localhost:6650" }}"#)
                 .reply(&index_management_handler)
                 .await;
             assert_eq!(resp.status(), 400);
@@ -1521,7 +1510,7 @@ mod tests {
                     source_id: source_id.to_string(),
                 })
             });
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1559,7 +1548,7 @@ mod tests {
                 })
             })
             .times(2);
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),
@@ -1606,7 +1595,7 @@ mod tests {
                 })
             },
         );
-        let index_service = IndexService::new(Arc::new(metastore), StorageUriResolver::for_test());
+        let index_service = IndexService::new(Arc::new(metastore), StorageResolver::unconfigured());
         let index_management_handler = super::index_management_handlers(
             Arc::new(index_service),
             Arc::new(QuickwitConfig::for_test()),

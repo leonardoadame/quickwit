@@ -21,10 +21,7 @@
 
 mod index;
 
-pub use index::{
-    clear_cache_directory, remove_indexing_directory, validate_storage_uri, IndexService,
-    IndexServiceError,
-};
+pub use index::{clear_cache_directory, validate_storage_uri, IndexService, IndexServiceError};
 
 #[cfg(test)]
 mod tests {
@@ -32,7 +29,7 @@ mod tests {
 
     use quickwit_common::FileEntry;
     use quickwit_indexing::TestSandbox;
-    use quickwit_storage::StorageUriResolver;
+    use quickwit_storage::StorageResolver;
 
     use crate::IndexService;
 
@@ -71,7 +68,7 @@ mod tests {
         }
         // Now delete the index.
         let index_service =
-            IndexService::new(test_sandbox.metastore(), StorageUriResolver::for_test());
+            IndexService::new(test_sandbox.metastore(), StorageResolver::unconfigured());
         let deleted_file_entries = index_service.delete_index(index_id, false).await?;
         assert_eq!(deleted_file_entries.len(), 1);
         test_sandbox.assert_quit().await;

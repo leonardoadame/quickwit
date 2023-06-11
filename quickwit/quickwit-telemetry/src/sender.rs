@@ -28,11 +28,17 @@ use tokio::task::JoinHandle;
 use tokio::time::Interval;
 use tracing::info;
 
-use crate::payload::{ClientInformation, EventWithTimestamp, TelemetryEvent, TelemetryPayload};
+use crate::payload::{
+    ClientInfo, EventWithTimestamp, QuickwitTelemetryInfo, TelemetryEvent, TelemetryPayload,
+};
 use crate::sink::{HttpClient, Sink};
 
 /// At most 1 Request per minutes.
 const TELEMETRY_PUSH_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// Interval at which to send telemetry `Running` event.
+const TELEMETRY_RUNNING_EVENT_INTERVAL: Duration =
+    Duration::from_secs(if cfg!(test) { 3 } else { 60 * 60 * 12 }); // 12h
 
 /// Upon termination of the program, we send one last telemetry request with pending events.
 /// This duration is the amount of time we wait for at most to send that last telemetry request.
@@ -149,7 +155,8 @@ impl Events {
 
 pub(crate) struct Inner {
     sink: Option<Box<dyn Sink>>,
-    client_information: ClientInformation,
+    client_info: ClientInfo,
+    quickwit_info: QuickwitTelemetryInfo,
     /// This channel is just used to signal there are new items available.
     events: Events,
     clock: Clock,
@@ -164,7 +171,8 @@ impl Inner {
     async fn create_telemetry_payload(&self) -> TelemetryPayload {
         let events_state = self.events.drain_events().await;
         TelemetryPayload {
-            client_information: self.client_information.clone(),
+            client_info: self.client_info.clone(),
+            quickwit_info: self.quickwit_info.clone(),
             events: events_state.events,
             num_dropped_events: events_state.num_dropped_events,
         }
@@ -218,21 +226,39 @@ impl TelemetryLoopHandle {
 }
 
 impl TelemetrySender {
-    fn new<S: Sink>(sink_opt: Option<S>, clock: Clock) -> TelemetrySender {
+    pub fn from_quickwit_info(quickwit_info: QuickwitTelemetryInfo) -> Self {
+        let http_client = create_http_client();
+        TelemetrySender::new(
+            quickwit_info,
+            http_client,
+            Clock::periodical(TELEMETRY_PUSH_COOLDOWN),
+        )
+    }
+
+    fn new<S: Sink>(
+        quickwit_info: QuickwitTelemetryInfo,
+        sink_opt: Option<S>,
+        clock: Clock,
+    ) -> Self {
         let sink_opt: Option<Box<dyn Sink>> = if let Some(sink) = sink_opt {
             Some(Box::new(sink))
         } else {
             None
         };
-        TelemetrySender {
+        Self {
             inner: Arc::new(Inner {
                 sink: sink_opt,
-                client_information: ClientInformation::default(),
+                client_info: ClientInfo::default(),
+                quickwit_info,
                 events: Events::default(),
                 clock,
                 is_started: AtomicBool::new(false),
             }),
         }
+    }
+
+    pub fn loop_started(&self) -> bool {
+        self.inner.is_started.load(Ordering::Relaxed)
     }
 
     pub fn start_loop(&self) -> TelemetryLoopHandle {
@@ -250,6 +276,7 @@ impl TelemetrySender {
         );
 
         let inner = self.inner.clone();
+        start_monitor_if_server_running_task(inner.clone());
         let join_handle = tokio::task::spawn(async move {
             // This channel is used to send the command to terminate telemetry.
             loop {
@@ -275,30 +302,30 @@ impl TelemetrySender {
 }
 
 /// Check to see if telemetry is enabled.
-pub fn is_telemetry_enabled() -> bool {
-    std::env::var_os(crate::DISABLE_TELEMETRY_ENV_KEY).is_none()
+pub fn is_telemetry_disabled() -> bool {
+    std::env::var_os(crate::DISABLE_TELEMETRY_ENV_KEY).is_some()
+}
+
+fn start_monitor_if_server_running_task(telemetry_sender: Arc<Inner>) {
+    let mut clock = tokio::time::interval(TELEMETRY_RUNNING_EVENT_INTERVAL);
+    tokio::spawn(async move {
+        // Drop the first immediate tick.
+        clock.tick().await;
+        loop {
+            clock.tick().await;
+            telemetry_sender.send(TelemetryEvent::Running).await;
+        }
+    });
 }
 
 fn create_http_client() -> Option<HttpClient> {
-    // TODO add telemetry URL.
-    let client_opt = if is_telemetry_enabled() {
-        HttpClient::try_new()
-    } else {
-        None
-    };
-    if let Some(client) = client_opt.as_ref() {
-        info!("telemetry to {} is enabled.", client.endpoint());
-    } else {
+    if is_telemetry_disabled() {
         info!("telemetry to quickwit is disabled.");
+        return None;
     }
-    client_opt
-}
-
-impl Default for TelemetrySender {
-    fn default() -> Self {
-        let http_client = create_http_client();
-        TelemetrySender::new(http_client, Clock::periodical(TELEMETRY_PUSH_COOLDOWN))
-    }
+    let client = HttpClient::try_new()?;
+    info!("telemetry to {} is enabled.", client.endpoint());
+    Some(client)
 }
 
 #[cfg(test)]
@@ -313,18 +340,29 @@ mod tests {
     async fn test_enabling_and_disabling_telemetry() {
         // We group the two in a single test to ensure it happens on the same thread.
         env::set_var(crate::DISABLE_TELEMETRY_ENV_KEY, "");
-        assert_eq!(TelemetrySender::default().inner.is_disabled(), true);
+        assert_eq!(
+            TelemetrySender::from_quickwit_info(QuickwitTelemetryInfo::default())
+                .inner
+                .is_disabled(),
+            true
+        );
         env::remove_var(crate::DISABLE_TELEMETRY_ENV_KEY);
-        assert_eq!(TelemetrySender::default().inner.is_disabled(), false);
+        assert_eq!(
+            TelemetrySender::from_quickwit_info(QuickwitTelemetryInfo::default())
+                .inner
+                .is_disabled(),
+            false
+        );
     }
 
     #[tokio::test]
     async fn test_telemetry_no_wait_for_first_event() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (_clock_btn, clock) = Clock::manual().await;
-        let telemetry_sender = TelemetrySender::new(Some(tx), clock);
+        let telemetry_sender =
+            TelemetrySender::new(QuickwitTelemetryInfo::default(), Some(tx), clock);
         let loop_handler = telemetry_sender.start_loop();
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
         let payload_opt = rx.recv().await;
         assert!(payload_opt.is_some());
         let payload = payload_opt.unwrap();
@@ -336,15 +374,16 @@ mod tests {
     async fn test_telemetry_two_events() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (clock_btn, clock) = Clock::manual().await;
-        let telemetry_sender = TelemetrySender::new(Some(tx), clock);
+        let telemetry_sender =
+            TelemetrySender::new(QuickwitTelemetryInfo::default(), Some(tx), clock);
         let loop_handler = telemetry_sender.start_loop();
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
         {
             let payload = rx.recv().await.unwrap();
             assert_eq!(payload.events.len(), 1);
         }
         clock_btn.tick().await;
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
         {
             let payload = rx.recv().await.unwrap();
             assert_eq!(payload.events.len(), 1);
@@ -353,23 +392,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_telemetry_uptime_events() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (clock_btn, clock) = Clock::manual().await;
+        let telemetry_sender =
+            TelemetrySender::new(QuickwitTelemetryInfo::default(), Some(tx), clock);
+        let loop_handler = telemetry_sender.start_loop();
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
+        {
+            let payload = rx.recv().await.unwrap();
+            assert_eq!(payload.events.len(), 1);
+        }
+        clock_btn.tick().await;
+        tokio::time::sleep(TELEMETRY_RUNNING_EVENT_INTERVAL + Duration::from_secs(1)).await;
+        {
+            let payload = rx.recv().await.unwrap();
+            assert_eq!(payload.events.len(), 1);
+            assert_eq!(payload.events[0].event, TelemetryEvent::Running);
+        }
+        loop_handler.terminate_telemetry().await;
+    }
+
+    #[tokio::test]
     async fn test_telemetry_cooldown_observed() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (clock_btn, clock) = Clock::manual().await;
-        let telemetry_sender = TelemetrySender::new(Some(tx), clock);
+        let telemetry_sender =
+            TelemetrySender::new(QuickwitTelemetryInfo::default(), Some(tx), clock);
         let loop_handler = telemetry_sender.start_loop();
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
         {
             let payload = rx.recv().await.unwrap();
             assert_eq!(payload.events.len(), 1);
         }
         tokio::task::yield_now().await;
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
 
         let timeout_res = tokio::time::timeout(Duration::from_millis(1), rx.recv()).await;
         assert!(timeout_res.is_err());
 
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
         clock_btn.tick().await;
         {
             let payload = rx.recv().await.unwrap();
@@ -382,9 +444,10 @@ mod tests {
     async fn test_terminate_telemetry_sends_pending_events() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (_clock_btn, clock) = Clock::manual().await;
-        let telemetry_sender = TelemetrySender::new(Some(tx), clock);
+        let telemetry_sender =
+            TelemetrySender::new(QuickwitTelemetryInfo::default(), Some(tx), clock);
         let loop_handler = telemetry_sender.start_loop();
-        telemetry_sender.send(TelemetryEvent::Create).await;
+        telemetry_sender.send(TelemetryEvent::UiIndexPageLoad).await;
         let payload = rx.recv().await.unwrap();
         assert_eq!(payload.events.len(), 1);
         telemetry_sender

@@ -1,6 +1,6 @@
 ---
 title: REST API
-sidebar_position: 1
+sidebar_position: 10
 ---
 
 ## API version
@@ -88,7 +88,7 @@ The response is a JSON object, and the content type is `application/json; charse
 ### Search stream in an index
 
 ```
-GET api/v1/<index id>/search/stream?query=searchterm
+GET api/v1/<index id>/search/stream?query=searchterm&fast_field=my_id
 ```
 
 Streams field values from ALL documents matching a search query in the given index `<index id>`, in a specified output format among the following:
@@ -124,8 +124,7 @@ The endpoint will return 10 million values if 10 million documents match the que
 | `start_timestamp` | `i64`      | If set, restrict search to documents with a `timestamp >= start_timestamp`. The value must be in seconds.        |                                                    |
 | `end_timestamp`   | `i64`      | If set, restrict search to documents with a `timestamp < end_timestamp`. The value must be in seconds.           |                                                    |
 | `partition_by_field`   | `String`      | If set, the endpoint returns chunks of data for each partition field value. This field must be a fast field of type `i64` or `u64`.           |                                                    |
-
-| `output_format`   | `String`   | Response output format. `csv` or `clickHouseRowBinary`                                                           | `csv`                                              |
+| `output_format`   | `String`   | Response output format. `csv` or `clickHouseRowBinary`  | `csv` |
 
 :::info
 The `start_timestamp` and `end_timestamp` should be specified in seconds regardless of the timestamp field precision.
@@ -152,6 +151,8 @@ POST api/v1/<index id>/ingest -d \
 
 Ingest a batch of documents to make them searchable in a given `<index id>`. Currently, NDJSON is the only accepted payload format. This endpoint is only available on a node that is running an indexer service.
 
+#### Controlling when the indexed documents will be available for search
+
 Newly added documents will not appear in the search results until they are added to a split and that split is committed. This process is automatic and is controlled by `split_num_docs_target` and `commit_timeout_secs` parameters. By default, the ingest command exits as soon as the records are added to the indexing queue, which means that the new documents will not appear in the search results at this moment. This behavior can be changed by adding `commit=wait_for` or `commit=force` parameters to the query. The `wait_for` parameter will cause the command to wait for the documents to be committed according to the standard time or number of documents rules. The `force` parameter will trigger a commit after all documents in the request are processed. It will also wait for this commit to finish before returning. Please note that the `force` option may have a significant performance cost especially if it is used on small batches.
 
 ```
@@ -171,37 +172,11 @@ The payload size is limited to 10MB as this endpoint is intended to receive docu
 | ------------- | ------------- |
 | `index id`  | The index id  |
 
-#### Response
+#### Query parameters
 
-The response is a JSON object, and the content type is `application/json; charset=UTF-8.`
-
-| Field                       | Description                                                                                                                                                              |   Type   |
-|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:--------:|
-| `num_docs_for_processing` | Total number of documents ingested for processing. The documents may not have been processed. The API will not return indexing errors, check the server logs for errors. | `number` |
-
-### Ingest data with Elasticsearch compatible API
-
-```
-POST api/v1/_bulk -d \
-'{ "create" : { "_index" : "wikipedia", "_id" : "1" } }
-{"url":"https://en.wikipedia.org/wiki?id=1","title":"foo","body":"foo"}
-{ "create" : { "_index" : "wikipedia", "_id" : "2" } }
-{"url":"https://en.wikipedia.org/wiki?id=2","title":"bar","body":"bar"}
-{ "create" : { "_index" : "wikipedia", "_id" : "3" } }
-{"url":"https://en.wikipedia.org/wiki?id=3","title":"baz","body":"baz"}'
-```
-
-Ingest a batch of documents to make them searchable using the [Elasticsearch](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html) bulk API. This endpoint provides compatibility with tools or systems that already send data to Elasticsearch for indexing. Currently, only the `create` action of the bulk API is supported, all other actions such as `delete` or `update` are ignored. The [`refresh`](https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-refresh.html) parameter is also supported.
-:::caution
-The quickwit API will not report errors, you need to check the server logs.
-
-In Elasticsearch, the `create` action has a specific behavior when the ingest documents contain an identifier (the `_id` field). It only inserts such a document if it was not inserted before. This is extremely handy to achieve At-Most-Once indexing.
-Quickwit does not have any notion of document id and does not support this feature.
-:::
-
-:::info
-The payload size is limited to 10MB as this endpoint is intended to receive documents in batch.
-:::
+| Variable            | Type       | Description                                        | Default value |
+|---------------------|------------|----------------------------------------------------|---------------|
+| `commit`            | `String`   | The commit behavior: `auto`, `wait_for` or `force` | `auto`        |
 
 #### Response
 
@@ -241,7 +216,7 @@ curl -XPOST http://0.0.0.0:8080/api/v1/indexes --data @index_config.json -H "Con
 
 ```json title="index_config.json
 {
-    "version": "0.5",
+    "version": "0.6",
     "index_id": "hdfs-logs",
     "doc_mapping": {
         "field_mappings": [
@@ -326,7 +301,7 @@ The response is the index metadata of the requested index, and the content type 
 | `sources`          | List of the index sources configurations. | `Array<SourceConfig>` |
 
 
-### Describe an index 
+### Describe an index
 
 ```
 GET api/v1/indexes/<index id>/describe
@@ -337,16 +312,17 @@ Describes an index of ID `index id`.
 
 The response is the stats about the requested index, and the content type is `application/json; charset=UTF-8.`
 
-| Field                  | Description                               |         Type          |
-|------------------------|-------------------------------------------|:---------------------:|
-| `index_id`             | Index ID of index.                        |       `String`        |
-| `index_uri`            | Uri of index                              |       `String`        |
-| `num_published_splits` | Number of published splits.               |       `number`        |
-| `num_published_docs`   | Number of published documents.            |       `number`        |
-| `size_published_docs`  | Size of the published documents in bytes. |       `number`        |
-| `timestamp_field_name` | Type of timestamp.                        |       `String`        |
-| `min_timestamp`        | Starting time of timestamp.               |       `number`        |
-| `max_timestamp`        | Ending time of timestamp.                 |       `number`        |
+| Field                               | Description                                              |         Type          |
+|-------------------------------------|----------------------------------------------------------|:---------------------:|
+| `index_id`                          | Index ID of index.                                       |       `String`        |
+| `index_uri`                         | Uri of index                                             |       `String`        |
+| `num_published_splits`              | Number of published splits.                              |       `number`        |
+| `size_published_splits`             | Size of published splits.                                |       `number`        |
+| `num_published_docs`                | Number of published documents.                           |       `number`        |
+| `size_published_docs_uncompressed`  | Size of the published documents in bytes (uncompressed). |       `number`        |
+| `timestamp_field_name`              | Name of timestamp field.                                       |       `String`        |
+| `min_timestamp`                     | Starting time of timestamp.                              |       `number`        |
+| `max_timestamp`                     | Ending time of timestamp.                                |       `number`        |
 
 ### Clears an index
 
@@ -418,7 +394,7 @@ curl -XPOST http://0.0.0.0:8080/api/v1/indexes/my-index/sources --data @source_c
 
 ```json title="source_config.json
 {
-    "version": "0.5",
+    "version": "0.6",
     "source_id": "kafka-source",
     "source_type": "kafka",
     "params": {

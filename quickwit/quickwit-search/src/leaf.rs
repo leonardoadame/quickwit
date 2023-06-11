@@ -26,7 +26,7 @@ use anyhow::Context;
 use futures::future::try_join_all;
 use itertools::{Either, Itertools};
 use quickwit_directories::{CachingDirectory, HotDirectory, StorageDirectory};
-use quickwit_doc_mapper::{DocMapper, WarmupInfo};
+use quickwit_doc_mapper::{DocMapper, TermRange, WarmupInfo};
 use quickwit_proto::{
     LeafListTermsResponse, LeafSearchResponse, ListTermsRequest, SearchRequest,
     SplitIdAndFooterOffsets, SplitSearchError,
@@ -119,6 +119,9 @@ pub(crate) async fn open_index_with_caches(
     };
     let mut index = Index::open(hot_directory)?;
     index.set_tokenizers(quickwit_query::get_quickwit_tokenizer_manager().clone());
+    index.set_fast_field_tokenizers(
+        quickwit_query::get_quickwit_fastfield_normalizer_manager().clone(),
+    );
     Ok(index)
 }
 
@@ -142,6 +145,9 @@ pub(crate) async fn warmup(searcher: &Searcher, warmup_info: &WarmupInfo) -> any
     debug!(warmup_info=?warmup_info, "warmup");
     let warm_up_terms_future = warm_up_terms(searcher, &warmup_info.terms_grouped_by_field)
         .instrument(debug_span!("warm_up_terms"));
+    let warm_up_term_ranges_future =
+        warm_up_term_ranges(searcher, &warmup_info.term_ranges_grouped_by_field)
+            .instrument(debug_span!("warm_up_term_ranges"));
     let warm_up_term_dict_future =
         warm_up_term_dict_fields(searcher, &warmup_info.term_dict_field_names)
             .instrument(debug_span!("warm_up_term_dicts"));
@@ -151,24 +157,16 @@ pub(crate) async fn warmup(searcher: &Searcher, warmup_info: &WarmupInfo) -> any
         .instrument(debug_span!("warm_up_fieldnorms"));
     let warm_up_postings_future = warm_up_postings(searcher, &warmup_info.posting_field_names)
         .instrument(debug_span!("warm_up_postings"));
-    let (
-        warm_up_terms_res,
-        warm_up_fastfields_res,
-        warm_up_term_dict_res,
-        warm_up_fieldnorms_res,
-        warm_up_postings_res,
-    ) = tokio::join!(
+
+    tokio::try_join!(
         warm_up_terms_future,
+        warm_up_term_ranges_future,
         warm_up_fastfields_future,
         warm_up_term_dict_future,
         warm_up_fieldnorms_future,
         warm_up_postings_future,
-    );
-    warm_up_terms_res?;
-    warm_up_fastfields_res?;
-    warm_up_term_dict_res?;
-    warm_up_fieldnorms_res?;
-    warm_up_postings_res?;
+    )?;
+
     Ok(())
 }
 
@@ -282,6 +280,29 @@ async fn warm_up_terms(
     Ok(())
 }
 
+async fn warm_up_term_ranges(
+    searcher: &Searcher,
+    terms_grouped_by_field: &HashMap<Field, HashMap<TermRange, bool>>,
+) -> anyhow::Result<()> {
+    let mut warm_up_futures = Vec::new();
+    for (field, terms) in terms_grouped_by_field {
+        for segment_reader in searcher.segment_readers() {
+            let inv_idx = segment_reader.inverted_index(*field)?;
+            for (term_range, position_needed) in terms.iter() {
+                let inv_idx_clone = inv_idx.clone();
+                let range = (term_range.start.as_ref(), term_range.end.as_ref());
+                warm_up_futures.push(async move {
+                    inv_idx_clone
+                        .warm_postings_range(range, term_range.limit, *position_needed)
+                        .await
+                });
+            }
+        }
+    }
+    try_join_all(warm_up_futures).await?;
+    Ok(())
+}
+
 async fn warm_up_fieldnorms(searcher: &Searcher, requires_scoring: bool) -> anyhow::Result<()> {
     if !requires_scoring {
         return Ok(());
@@ -304,11 +325,12 @@ async fn warm_up_fieldnorms(searcher: &Searcher, requires_scoring: bool) -> anyh
 #[instrument(skip(searcher_context, search_request, storage, split, doc_mapper,))]
 async fn leaf_search_single_split(
     searcher_context: &SearcherContext,
-    search_request: &SearchRequest,
+    mut search_request: SearchRequest,
     storage: Arc<dyn Storage>,
     split: SplitIdAndFooterOffsets,
     doc_mapper: Arc<dyn DocMapper>,
 ) -> crate::Result<LeafSearchResponse> {
+    rewrite_request(&mut search_request, &split);
     if let Some(cached_answer) = searcher_context
         .leaf_search_cache
         .get(split.clone(), search_request.clone())
@@ -319,11 +341,12 @@ async fn leaf_search_single_split(
     let split_id = split.split_id.to_string();
     let index = open_index_with_caches(searcher_context, storage, &split, true).await?;
     let split_schema = index.schema();
+
     let quickwit_collector = make_collector_for_split(
         split_id.clone(),
         doc_mapper.as_ref(),
-        search_request,
-        searcher_context.aggregation_limits.clone(),
+        &search_request,
+        searcher_context.get_aggregation_limits(),
     )?;
     let query_ast: QueryAst = serde_json::from_str(search_request.query_ast.as_str())
         .map_err(|err| SearchError::InvalidQuery(err.to_string()))?;
@@ -348,12 +371,47 @@ async fn leaf_search_single_split(
         crate::SearchError::InternalError(format!("Leaf search panicked. split={split_id}"))
     })??;
 
-    searcher_context.leaf_search_cache.put(
-        split,
-        search_request.clone(),
-        leaf_search_response.clone(),
-    );
+    searcher_context
+        .leaf_search_cache
+        .put(split, search_request, leaf_search_response.clone());
     Ok(leaf_search_response)
+}
+
+/// Rewrite a request removing parts which incure additional download or computation with no
+/// effect.
+///
+/// This include things such as sorting result by a field or _score when no document is requested,
+/// or applying date range when the range covers the entire split.
+fn rewrite_request(search_request: &mut SearchRequest, split: &SplitIdAndFooterOffsets) {
+    if search_request.max_hits == 0 {
+        search_request.sort_by_field = None;
+    }
+    rewrite_start_end_time_bounds(
+        &mut search_request.start_timestamp,
+        &mut search_request.end_timestamp,
+        split,
+    )
+}
+
+pub(crate) fn rewrite_start_end_time_bounds(
+    start_timestamp_opt: &mut Option<i64>,
+    end_timestamp_opt: &mut Option<i64>,
+    split: &SplitIdAndFooterOffsets,
+) {
+    if let (Some(split_start), Some(split_end)) = (split.timestamp_start, split.timestamp_end) {
+        if let Some(start_timestamp) = start_timestamp_opt {
+            // both starts are inclusive
+            if *start_timestamp <= split_start {
+                *start_timestamp_opt = None;
+            }
+        }
+        if let Some(end_timestamp) = end_timestamp_opt {
+            // search end is exclusive, split end is inclusive
+            if *end_timestamp > split_end {
+                *end_timestamp_opt = None;
+            }
+        }
+    }
 }
 
 /// `leaf` step of search.
@@ -390,7 +448,7 @@ pub async fn leaf_search(
                     .start_timer();
                 let leaf_search_single_split_res = leaf_search_single_split(
                     &searcher_context_clone,
-                    &request,
+                    (*request).clone(),
                     index_storage_clone,
                     split.clone(),
                     doc_mapper_clone,
@@ -420,7 +478,8 @@ pub async fn leaf_search(
         });
 
     // Creates a collector which merges responses into one
-    let merge_collector = make_merge_collector(&request, &searcher_context.aggregation_limits)?;
+    let merge_collector =
+        make_merge_collector(&request, &searcher_context.get_aggregation_limits())?;
 
     // Merging is a cpu-bound task.
     // It should be executed by Tokio's blocking threads.

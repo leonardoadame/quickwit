@@ -31,15 +31,17 @@ use regex::Regex;
 mod config_value;
 mod index_config;
 pub mod merge_policy_config;
+mod metastore_config;
 mod quickwit_config;
 mod qw_env_vars;
 pub mod service;
 mod source_config;
+mod storage_config;
 mod templating;
 
 // We export that one for backward compatibility.
 // See #2048
-use index_config::serialize::{IndexConfigV0_5, VersionedIndexConfig};
+use index_config::serialize::{IndexConfigV0_6, VersionedIndexConfig};
 pub use index_config::{
     build_doc_mapper, load_index_config_from_user_config, DocMapping, IndexConfig,
     IndexingResources, IndexingSettings, RetentionPolicy, SearchSettings,
@@ -49,19 +51,27 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 pub use source_config::{
     load_source_config_from_user_config, FileSourceParams, KafkaSourceParams, KinesisSourceParams,
-    PulsarSourceAuth, PulsarSourceParams, RegionOrEndpoint, SourceConfig, SourceParams,
-    TransformConfig, VecSourceParams, VoidSourceParams, CLI_INGEST_SOURCE_ID, INGEST_API_SOURCE_ID,
+    PulsarSourceAuth, PulsarSourceParams, RegionOrEndpoint, SourceConfig, SourceInputFormat,
+    SourceParams, TransformConfig, VecSourceParams, VoidSourceParams, CLI_INGEST_SOURCE_ID,
+    INGEST_API_SOURCE_ID,
 };
 use tracing::warn;
 
 use crate::merge_policy_config::{
     ConstWriteAmplificationMergePolicyConfig, MergePolicyConfig, StableLogMergePolicyConfig,
 };
+pub use crate::metastore_config::{
+    MetastoreBackend, MetastoreConfig, MetastoreConfigs, PostgresMetastoreConfig,
+};
 pub use crate::quickwit_config::{
     IndexerConfig, IngestApiConfig, JaegerConfig, QuickwitConfig, SearcherConfig,
     DEFAULT_QW_CONFIG_PATH,
 };
-use crate::source_config::serialize::{SourceConfigV0_5, VersionedSourceConfig};
+use crate::source_config::serialize::{SourceConfigV0_6, VersionedSourceConfig};
+pub use crate::storage_config::{
+    AzureStorageConfig, FileStorageConfig, RamStorageConfig, S3StorageConfig, StorageBackend,
+    StorageConfig, StorageConfigs,
+};
 
 #[derive(utoipa::OpenApi)]
 #[openapi(components(schemas(
@@ -72,9 +82,10 @@ use crate::source_config::serialize::{SourceConfigV0_5, VersionedSourceConfig};
     MergePolicyConfig,
     DocMapping,
     VersionedSourceConfig,
-    SourceConfigV0_5,
+    SourceConfigV0_6,
     VersionedIndexConfig,
-    IndexConfigV0_5,
+    IndexConfigV0_6,
+    SourceInputFormat,
     SourceParams,
     FileSourceParams,
     KafkaSourceParams,

@@ -21,7 +21,8 @@ use std::cmp::{Ord, Ordering, PartialEq, PartialOrd};
 use std::collections::{BTreeSet, HashMap};
 
 use async_trait::async_trait;
-use base64::prelude::{Engine, BASE64_STANDARD};
+use quickwit_common::uri::Uri;
+use quickwit_config::{load_index_config_from_user_config, ConfigFormat, IndexConfig};
 use quickwit_ingest::{
     CommitType, DocBatch, DocBatchBuilder, IngestRequest, IngestService, IngestServiceClient,
 };
@@ -35,61 +36,61 @@ use tonic::{Request, Response, Status};
 use tracing::field::Empty;
 use tracing::{error, instrument, warn, Span as RuntimeSpan};
 
-use super::{parse_log_record_body, TraceId};
+use super::{is_zero, parse_log_record_body, SpanId, TraceId};
 use crate::otlp::extract_attributes;
 use crate::otlp::metrics::OTLP_SERVICE_METRICS;
 
-pub const OTEL_LOGS_INDEX_ID: &str = "otel-logs-v0";
+pub const OTEL_LOGS_INDEX_ID: &str = "otel-logs-v0_6";
 
-pub const OTEL_LOGS_INDEX_CONFIG: &str = r#"
-version: 0.5
+const OTEL_LOGS_INDEX_CONFIG: &str = r#"
+version: 0.6
 
-index_id: otel-logs-v0
+index_id: ${INDEX_ID}
 
 doc_mapping:
   mode: strict
   field_mappings:
-    - name: timestamp_secs
+    - name: timestamp_nanos
       type: datetime
       input_formats: [unix_timestamp]
+      output_format: unix_timestamp_nanos
       indexed: false
       fast: true
-      precision: seconds
-      stored: false
-    - name: timestamp_nanos
-      type: u64
-      indexed: false
+      precision: milliseconds
     - name: observed_timestamp_nanos
-      type: u64
-      indexed: false
+      type: datetime
+      input_formats: [unix_timestamp]
+      output_format: unix_timestamp_nanos
     - name: service_name
       type: text
       tokenizer: raw
     - name: severity_text
       type: text
       tokenizer: raw
+      fast: true
     - name: severity_number
       type: u64
+      fast: true
     - name: body
       type: json
     - name: attributes
       type: json
       tokenizer: raw
+      fast: true
     - name: dropped_attributes_count
       type: u64
       indexed: false
     - name: trace_id
-      type: text
-      tokenizer: raw
+      type: bytes
     - name: span_id
-      type: text
-      tokenizer: raw
+      type: bytes
     - name: trace_flags
       type: u64
       indexed: false
     - name: resource_attributes
       type: json
       tokenizer: raw
+      fast: true
     - name: resource_dropped_attributes_count
       type: u64
       indexed: false
@@ -106,7 +107,7 @@ doc_mapping:
       type: u64
       indexed: false
 
-  timestamp_field: timestamp_secs
+  timestamp_field: timestamp_nanos
 
   # partition_key: hash_mod(service_name, 100)
   # tag_fields: [service_name]
@@ -115,30 +116,57 @@ indexing_settings:
   commit_timeout_secs: 5
 
 search_settings:
-  default_search_fields: []
+  default_search_fields: [body.message]
 "#;
-
-pub type Base64 = String;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogRecord {
-    pub timestamp_secs: Option<u64>,
     pub timestamp_nanos: u64,
-    pub observed_timestamp_nanos: u64,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_timestamp_nanos: Option<u64>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub service_name: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub severity_text: Option<String>,
     pub severity_number: i32,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<JsonValue>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub attributes: HashMap<String, JsonValue>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero")]
     pub dropped_attributes_count: u32,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<TraceId>,
-    pub span_id: Option<Base64>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<SpanId>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_flags: Option<u32>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub resource_attributes: HashMap<String, JsonValue>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero")]
     pub resource_dropped_attributes_count: u32,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_name: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_version: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub scope_attributes: HashMap<String, JsonValue>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero")]
     pub scope_dropped_attributes_count: u32,
 }
 
@@ -185,9 +213,18 @@ pub struct OtlpGrpcLogsService {
 }
 
 impl OtlpGrpcLogsService {
-    // TODO: remove and use registry
     pub fn new(ingest_service: IngestServiceClient) -> Self {
         Self { ingest_service }
+    }
+
+    pub fn index_config(default_index_root_uri: &Uri) -> anyhow::Result<IndexConfig> {
+        let index_config_str = OTEL_LOGS_INDEX_CONFIG.replace("${INDEX_ID}", OTEL_LOGS_INDEX_ID);
+        let index_config = load_index_config_from_user_config(
+            ConfigFormat::Yaml,
+            index_config_str.as_bytes(),
+            default_index_root_uri,
+        )?;
+        Ok(index_config)
     }
 
     async fn export_inner(
@@ -288,19 +325,24 @@ impl OtlpGrpcLogsService {
                 for log_record in scope_log.log_records {
                     num_log_records += 1;
 
-                    let timestamp_nanos = log_record.time_unix_nano;
-                    let timestamp_secs = Some(timestamp_nanos / 1_000_000_000);
-                    let observed_timestamp_nanos = log_record.observed_time_unix_nano;
-
+                    if log_record.time_unix_nano == 0 {
+                        num_parse_errors += 1;
+                        continue;
+                    }
+                    let observed_timestamp_nanos = if log_record.observed_time_unix_nano != 0 {
+                        Some(log_record.observed_time_unix_nano)
+                    } else {
+                        None
+                    };
                     let trace_id = if log_record.trace_id.iter().any(|&byte| byte != 0) {
-                        let b64trace_id = TraceId::try_from(log_record.trace_id)
-                            .map_err(|error| Status::invalid_argument(error.to_string()))?;
-                        Some(b64trace_id)
+                        let trace_id = TraceId::try_from(log_record.trace_id)?;
+                        Some(trace_id)
                     } else {
                         None
                     };
                     let span_id = if log_record.span_id.iter().any(|&byte| byte != 0) {
-                        Some(BASE64_STANDARD.encode(log_record.span_id))
+                        let span_id = SpanId::try_from(log_record.span_id)?;
+                        Some(span_id)
                     } else {
                         None
                     };
@@ -317,8 +359,7 @@ impl OtlpGrpcLogsService {
                     let dropped_attributes_count = log_record.dropped_attributes_count;
 
                     let log_record = LogRecord {
-                        timestamp_secs,
-                        timestamp_nanos,
+                        timestamp_nanos: log_record.time_unix_nano,
                         observed_timestamp_nanos,
                         service_name: service_name.clone(),
                         severity_text,
@@ -418,5 +459,27 @@ impl LogsService for OtlpGrpcLogsService {
             .export_instrumented(request)
             .await
             .map(Response::new)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use quickwit_metastore::metastore_for_test;
+
+    use super::*;
+
+    #[test]
+    fn test_index_config_is_valid() {
+        let index_config =
+            OtlpGrpcLogsService::index_config(&Uri::for_test("ram:///indexes")).unwrap();
+        assert_eq!(index_config.index_id, OTEL_LOGS_INDEX_ID);
+    }
+
+    #[tokio::test]
+    async fn test_create_index() {
+        let metastore = metastore_for_test();
+        let index_config =
+            OtlpGrpcLogsService::index_config(&Uri::for_test("ram:///indexes")).unwrap();
+        metastore.create_index(index_config).await.unwrap();
     }
 }

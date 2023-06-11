@@ -17,9 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use bytes::Bytes;
+use quickwit_common::test_utils::wait_until_predicate;
+use quickwit_config::service::QuickwitService;
+use quickwit_indexing::actors::INDEXING_DIR_NAME;
+use quickwit_janitor::actors::DELETE_SERVICE_TASK_DIR_NAME;
 use quickwit_metastore::SplitState;
 use quickwit_rest_client::rest_client::CommitType;
 use quickwit_serve::SearchRequestQueryString;
@@ -35,7 +40,7 @@ async fn test_restarting_standalone_server() {
     let index_id = "test-index-with-restarting";
     let index_config = Bytes::from(format!(
         r#"
-            version: 0.5
+            version: 0.6
             index_id: {}
             doc_mapping:
                 field_mappings:
@@ -85,7 +90,7 @@ async fn test_restarting_standalone_server() {
     .await
     .unwrap();
 
-    // Delete the indexq
+    // Delete the index
     sandbox
         .indexer_rest_client
         .indexes()
@@ -127,6 +132,7 @@ async fn test_restarting_standalone_server() {
             index_id,
             ingest_json!({"body": "third record"}),
             None,
+            None,
             CommitType::Force,
         )
         .await
@@ -136,6 +142,7 @@ async fn test_restarting_standalone_server() {
         .ingest(
             index_id,
             ingest_json!({"body": "fourth record"}),
+            None,
             None,
             CommitType::Force,
         )
@@ -167,6 +174,44 @@ async fn test_restarting_standalone_server() {
         .await
         .unwrap();
 
+    // Check that we have one directory
+    let path = sandbox
+        .node_configs
+        .first()
+        .unwrap()
+        .quickwit_config
+        .data_dir_path
+        .clone();
+    let delete_service_path = path.join(DELETE_SERVICE_TASK_DIR_NAME);
+    let indexing_path = path.join(INDEXING_DIR_NAME);
+
+    assert_eq!(delete_service_path.read_dir().unwrap().count(), 1);
+    assert_eq!(indexing_path.read_dir().unwrap().count(), 1);
+
+    // Delete the index
+    sandbox
+        .indexer_rest_client
+        .indexes()
+        .delete(index_id, false)
+        .await
+        .unwrap();
+
+    // Wait to make sure all directories are cleaned up
+    wait_until_predicate(
+        || {
+            let delete_service_path = delete_service_path.clone();
+            let indexing_path = indexing_path.clone();
+            async move {
+                delete_service_path.read_dir().unwrap().count() == 0
+                    && indexing_path.read_dir().unwrap().count() == 0
+            }
+        },
+        Duration::from_secs(10),
+        Duration::from_millis(100),
+    )
+    .await
+    .unwrap();
+
     sandbox.shutdown().await.unwrap();
 }
 
@@ -182,7 +227,7 @@ async fn test_commit_modes() {
         .indexes()
         .create(
             r#"
-            version: 0.5
+            version: 0.6
             index_id: test_commit_modes_index
             doc_mapping:
               field_mappings:
@@ -236,6 +281,7 @@ async fn test_commit_modes() {
             index_id,
             ingest_json!({"body": "wait"}),
             None,
+            None,
             CommitType::WaitFor,
         )
         .await
@@ -263,6 +309,7 @@ async fn test_commit_modes() {
         .ingest(
             index_id,
             ingest_json!({"body": "auto"}),
+            None,
             None,
             CommitType::Auto,
         )
@@ -308,6 +355,114 @@ async fn test_commit_modes() {
 }
 
 #[tokio::test]
+async fn test_very_large_index_name() {
+    quickwit_common::setup_logging_for_tests();
+    let nodes_services = vec![
+        HashSet::from_iter([QuickwitService::Searcher]),
+        HashSet::from_iter([QuickwitService::Metastore]),
+        HashSet::from_iter([QuickwitService::Indexer]),
+        HashSet::from_iter([QuickwitService::ControlPlane]),
+        HashSet::from_iter([QuickwitService::Janitor]),
+    ];
+    let sandbox = ClusterSandbox::start_cluster_nodes(&nodes_services)
+        .await
+        .unwrap();
+    sandbox.wait_for_cluster_num_ready_nodes(5).await.unwrap();
+
+    let index_id = "its_very_very_very_very_very_very_very_very_very_very_very_\
+    very_very_very_very_very_very_very_very_very_very_very_very_very_very_very_\
+    very_very_very_very_very_very_very_very_very_very_very_very_very_very_very_\
+    very_very_very_very_very_very_index_large_name";
+    assert_eq!(index_id.len(), 255);
+    let oversized_index_id = format!("{index_id}1");
+    // Create index
+    sandbox
+        .indexer_rest_client
+        .indexes()
+        .create(
+            format!(
+                r#"
+                version: 0.6
+                index_id: {index_id}
+                doc_mapping:
+                  field_mappings:
+                    - name: body
+                      type: text
+                "#,
+            )
+            .into(),
+            quickwit_config::ConfigFormat::Yaml,
+            false,
+        )
+        .await
+        .unwrap();
+
+    // Test force commit
+    ingest_with_retry(
+        &sandbox.indexer_rest_client,
+        index_id,
+        ingest_json!({"body": "force"}),
+        CommitType::Force,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sandbox
+            .searcher_rest_client
+            .search(
+                index_id,
+                SearchRequestQueryString {
+                    query: "body:force".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .num_hits,
+        1
+    );
+
+    // Delete the index
+    sandbox
+        .indexer_rest_client
+        .indexes()
+        .delete(index_id, false)
+        .await
+        .unwrap();
+
+    // Try to create an index with a very long name
+    let error = sandbox
+        .indexer_rest_client
+        .indexes()
+        .create(
+            format!(
+                r#"
+                    version: 0.6
+                    index_id: {oversized_index_id}
+                    doc_mapping:
+                      field_mappings:
+                        - name: body
+                          type: text
+                    "#,
+            )
+            .into(),
+            quickwit_config::ConfigFormat::Yaml,
+            false,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().ends_with(
+        "is invalid. Identifiers must match the following regular expression: \
+         `^[a-zA-Z][a-zA-Z0-9-_]{2,254}$`..)"
+    ));
+
+    // Clean up
+    sandbox.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_shutdown() {
     quickwit_common::setup_logging_for_tests();
     let sandbox = ClusterSandbox::start_standalone_node().await.unwrap();
@@ -319,7 +474,7 @@ async fn test_shutdown() {
         .indexes()
         .create(
             r#"
-            version: 0.5
+            version: 0.6
             index_id: test_commit_modes_index
             doc_mapping:
               field_mappings:
@@ -351,6 +506,7 @@ async fn test_shutdown() {
         .ingest(
             index_id,
             ingest_json!({"body": "two"}),
+            None,
             None,
             CommitType::Force,
         )

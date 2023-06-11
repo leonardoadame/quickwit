@@ -31,7 +31,7 @@ use quickwit_proto::{
     LeafSearchRequest, LeafSearchResponse, LeafSearchStreamRequest, LeafSearchStreamResponse,
     ListTermsRequest, ListTermsResponse, SearchRequest, SearchResponse, SearchStreamRequest,
 };
-use quickwit_storage::{Cache, MemorySizedCache, QuickwitCache, StorageUriResolver};
+use quickwit_storage::{Cache, MemorySizedCache, QuickwitCache, StorageResolver};
 use tantivy::aggregation::AggregationLimits;
 use tokio::sync::Semaphore;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -48,7 +48,7 @@ use crate::{
 /// The search service implementation.
 pub struct SearchServiceImpl {
     metastore: Arc<dyn Metastore>,
-    storage_uri_resolver: StorageUriResolver,
+    storage_resolver: StorageResolver,
     cluster_client: ClusterClient,
     search_job_placer: SearchJobPlacer,
     searcher_context: Arc<SearcherContext>,
@@ -119,7 +119,7 @@ impl SearchServiceImpl {
     /// Creates a new search service.
     pub fn new(
         metastore: Arc<dyn Metastore>,
-        storage_uri_resolver: StorageUriResolver,
+        storage_resolver: StorageResolver,
         cluster_client: ClusterClient,
         search_job_placer: SearchJobPlacer,
         searcher_config: SearcherConfig,
@@ -127,7 +127,7 @@ impl SearchServiceImpl {
         let searcher_context = Arc::new(SearcherContext::new(searcher_config));
         SearchServiceImpl {
             metastore,
-            storage_uri_resolver,
+            storage_resolver,
             cluster_client,
             search_job_placer,
             searcher_context,
@@ -166,8 +166,9 @@ impl SearchService for SearchServiceImpl {
             .ok_or_else(|| SearchError::InternalError("No search request.".to_string()))?;
         info!(index=?search_request.index_id, splits=?leaf_search_request.split_offsets, "leaf_search");
         let storage = self
-            .storage_uri_resolver
-            .resolve(&Uri::from_well_formed(leaf_search_request.index_uri))?;
+            .storage_resolver
+            .resolve(&Uri::from_well_formed(leaf_search_request.index_uri))
+            .await?;
         let split_ids = leaf_search_request.split_offsets;
         let doc_mapper = deserialize_doc_mapper(&leaf_search_request.doc_mapper)?;
 
@@ -188,8 +189,9 @@ impl SearchService for SearchServiceImpl {
         fetch_docs_request: FetchDocsRequest,
     ) -> crate::Result<FetchDocsResponse> {
         let storage = self
-            .storage_uri_resolver
-            .resolve(&Uri::from_well_formed(fetch_docs_request.index_uri))?;
+            .storage_resolver
+            .resolve(&Uri::from_well_formed(fetch_docs_request.index_uri))
+            .await?;
         let search_request_opt = fetch_docs_request.search_request.as_ref();
         let doc_mapper = deserialize_doc_mapper(&fetch_docs_request.doc_mapper)?;
         let fetch_docs_response = fetch_docs(
@@ -228,8 +230,9 @@ impl SearchService for SearchServiceImpl {
             .ok_or_else(|| SearchError::InternalError("No search request.".to_string()))?;
         info!(index=?stream_request.index_id, splits=?leaf_stream_request.split_offsets, "leaf_search");
         let storage = self
-            .storage_uri_resolver
-            .resolve(&Uri::from_well_formed(leaf_stream_request.index_uri))?;
+            .storage_resolver
+            .resolve(&Uri::from_well_formed(leaf_stream_request.index_uri))
+            .await?;
         let doc_mapper = deserialize_doc_mapper(&leaf_stream_request.doc_mapper)?;
         let leaf_receiver = leaf_search_stream(
             self.searcher_context.clone(),
@@ -267,8 +270,9 @@ impl SearchService for SearchServiceImpl {
         info!(index=?search_request.index_id, splits=?leaf_search_request.split_offsets,
          "leaf_search");
         let storage = self
-            .storage_uri_resolver
-            .resolve(&Uri::from_well_formed(leaf_search_request.index_uri))?;
+            .storage_resolver
+            .resolve(&Uri::from_well_formed(leaf_search_request.index_uri))
+            .await?;
         let split_ids = leaf_search_request.split_offsets;
 
         let leaf_search_response = leaf_list_terms(
@@ -289,8 +293,6 @@ impl SearchService for SearchServiceImpl {
 pub struct SearcherContext {
     /// Searcher config.
     pub searcher_config: SearcherConfig,
-    // Aggregation limits.
-    pub aggregation_limits: AggregationLimits,
     /// Fast fields cache.
     pub fast_fields_cache: Arc<dyn Cache>,
     /// Counting semaphore to limit concurrent leaf search split requests.
@@ -330,21 +332,23 @@ impl SearcherContext {
         let fast_field_cache_capacity =
             searcher_config.fast_field_cache_capacity.get_bytes() as usize;
         let storage_long_term_cache = Arc::new(QuickwitCache::new(fast_field_cache_capacity));
-        let aggregation_limits = AggregationLimits::new(
-            Some(searcher_config.aggregation_memory_limit.get_bytes()),
-            Some(searcher_config.aggregation_bucket_limit),
-        );
         let leaf_search_cache = LeafSearchCache::new(
             searcher_config.partial_request_cache_capacity.get_bytes() as usize,
         );
         Self {
             searcher_config,
-            aggregation_limits,
             fast_fields_cache: storage_long_term_cache,
             leaf_search_split_semaphore,
             split_footer_cache: global_split_footer_cache,
             split_stream_semaphore,
             leaf_search_cache,
         }
+    }
+    // Returns a new instance to track the aggregation memory usage.
+    pub fn get_aggregation_limits(&self) -> AggregationLimits {
+        AggregationLimits::new(
+            Some(self.searcher_config.aggregation_memory_limit.get_bytes()),
+            Some(self.searcher_config.aggregation_bucket_limit),
+        )
     }
 }

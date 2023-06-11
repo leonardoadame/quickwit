@@ -45,7 +45,7 @@ impl<W: AsyncWrite + Send + Unpin> SendableAsync for W {}
 /// these intermediate directories.
 #[cfg_attr(any(test, feature = "testsuite"), mockall::automock)]
 #[async_trait]
-pub trait Storage: Send + Sync + 'static {
+pub trait Storage: fmt::Debug + Send + Sync + 'static {
     /// Check storage connection if applicable
     async fn check_connectivity(&self) -> anyhow::Result<()>;
 
@@ -115,7 +115,7 @@ pub trait Storage: Send + Sync + 'static {
     async fn exists(&self, path: &Path) -> StorageResult<bool> {
         match self.file_num_bytes(path).await {
             Ok(_) => Ok(true),
-            Err(storage_err) if storage_err.kind() == StorageErrorKind::DoesNotExist => Ok(false),
+            Err(storage_err) if storage_err.kind() == StorageErrorKind::NotFound => Ok(false),
             Err(other_storage_err) => Err(other_storage_err),
         }
     }

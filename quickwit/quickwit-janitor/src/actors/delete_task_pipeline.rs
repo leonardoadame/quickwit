@@ -19,20 +19,21 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use quickwit_actors::{
     Actor, ActorContext, ActorExitStatus, ActorHandle, Handler, Supervisor, SupervisorState,
-    HEARTBEAT,
 };
 use quickwit_common::io::IoControls;
+use quickwit_common::temp_dir::{self};
 use quickwit_common::uri::Uri;
 use quickwit_config::{build_doc_mapper, IndexingSettings};
 use quickwit_indexing::actors::{
     MergeExecutor, MergeSplitDownloader, Packager, Publisher, Uploader, UploaderType,
 };
 use quickwit_indexing::merge_policy::merge_policy_from_settings;
-use quickwit_indexing::models::{IndexingPipelineId, ScratchDirectory};
+use quickwit_indexing::models::IndexingPipelineId;
 use quickwit_indexing::{IndexingSplitStore, PublisherType, SplitsUpdateMailbox};
 use quickwit_metastore::Metastore;
 use quickwit_proto::IndexUid;
@@ -43,6 +44,14 @@ use tokio::join;
 use tracing::info;
 
 use super::delete_task_planner::DeleteTaskPlanner;
+
+const OBSERVE_PIPELINE_INTERVAL: Duration = if cfg!(any(test, feature = "testsuite")) {
+    Duration::from_millis(500)
+} else {
+    // 1 minute.
+    // This is only for observation purpose, not supervision.
+    Duration::from_secs(60)
+};
 
 struct DeletePipelineHandle {
     pub delete_task_planner: ActorHandle<Supervisor<DeleteTaskPlanner>>,
@@ -70,7 +79,7 @@ pub struct DeleteTaskPipeline {
     search_job_placer: SearchJobPlacer,
     indexing_settings: IndexingSettings,
     index_storage: Arc<dyn Storage>,
-    delete_service_dir_path: PathBuf,
+    delete_service_task_dir: PathBuf,
     handles: Option<DeletePipelineHandle>,
     max_concurrent_split_uploads: usize,
     state: DeleteTaskPipelineState,
@@ -120,7 +129,7 @@ impl DeleteTaskPipeline {
         search_job_placer: SearchJobPlacer,
         indexing_settings: IndexingSettings,
         index_storage: Arc<dyn Storage>,
-        delete_service_dir_path: PathBuf,
+        delete_service_task_dir: PathBuf,
         max_concurrent_split_uploads: usize,
     ) -> Self {
         Self {
@@ -129,7 +138,7 @@ impl DeleteTaskPipeline {
             search_job_placer,
             indexing_settings,
             index_storage,
-            delete_service_dir_path,
+            delete_service_task_dir,
             handles: Default::default(),
             max_concurrent_split_uploads,
             state: DeleteTaskPipelineState::default(),
@@ -139,20 +148,13 @@ impl DeleteTaskPipeline {
     pub async fn spawn_pipeline(&mut self, ctx: &ActorContext<Self>) -> anyhow::Result<()> {
         info!(
             index_id=%self.index_uid.index_id(),
-            root_dir=%self.delete_service_dir_path.display(),
+            root_dir=%self.delete_service_task_dir.to_str().unwrap(),
             "Spawning delete tasks pipeline.",
         );
         let index_metadata = self
             .metastore
-            .index_metadata(self.index_uid.index_id())
+            .index_metadata_strict(&self.index_uid)
             .await?;
-        if index_metadata.index_uid != self.index_uid {
-            return Err(anyhow::anyhow!(
-                "Cannot start the delete pipeline for index {}. The index has been already \
-                 deleted.",
-                &self.index_uid.index_id()
-            ));
-        }
         let index_config = index_metadata.into_index_config();
         let publisher = Publisher::new(
             PublisherType::MergePublisher,
@@ -206,19 +208,13 @@ impl DeleteTaskPipeline {
         );
         let (delete_executor_mailbox, task_executor_supervisor_handler) =
             ctx.spawn_actor().supervise(delete_executor);
-        let incarnation_id = self.index_uid.incarnation_id();
-        let indexing_directory_path = if incarnation_id.is_empty() {
-            // Legacy path for 0.5 indices
-            self.delete_service_dir_path.join(self.index_uid.index_id())
-        } else {
-            self.delete_service_dir_path
-                .join(self.index_uid.index_id())
-                .join(incarnation_id)
-        };
-        let scratch_directory = ScratchDirectory::create_in_dir(indexing_directory_path).await?;
+        let scratch_directory = temp_dir::Builder::default()
+            .join(self.index_uid.index_id())
+            .join(self.index_uid.incarnation_id())
+            .tempdir_in(&self.delete_service_task_dir)?;
         let merge_split_downloader = MergeSplitDownloader {
             scratch_directory,
-            split_store: split_store.clone(),
+            split_store,
             executor_mailbox: delete_executor_mailbox,
             io_controls: split_download_io_controls,
         };
@@ -285,28 +281,28 @@ impl Handler<Observe> for DeleteTaskPipeline {
                 publisher: publisher.state,
             }
         }
-        // Supervisors supervise every `HEARTBEAT`. We can wait a bit more to observe supervisors.
-        ctx.schedule_self_msg(HEARTBEAT, Observe).await;
+        ctx.schedule_self_msg(OBSERVE_PIPELINE_INTERVAL, Observe)
+            .await;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use async_trait::async_trait;
-    use quickwit_actors::{Handler, HEARTBEAT};
+    use quickwit_actors::Handler;
+    use quickwit_common::temp_dir::TempDirectory;
     use quickwit_config::merge_policy_config::MergePolicyConfig;
     use quickwit_config::IndexingSettings;
-    use quickwit_grpc_clients::service_client_pool::ServiceClientPool;
     use quickwit_indexing::TestSandbox;
     use quickwit_metastore::SplitState;
     use quickwit_proto::metastore_api::DeleteQuery;
     use quickwit_proto::{LeafSearchRequest, LeafSearchResponse};
-    use quickwit_search::{MockSearchService, SearchError, SearchJobPlacer, SearchServiceClient};
+    use quickwit_search::{
+        searcher_pool_for_test, MockSearchService, SearchError, SearchJobPlacer,
+    };
 
-    use super::{ActorContext, ActorExitStatus, DeleteTaskPipeline};
+    use super::{ActorContext, ActorExitStatus, DeleteTaskPipeline, OBSERVE_PIPELINE_INTERVAL};
 
     #[derive(Debug)]
     struct GracefulShutdown;
@@ -379,14 +375,9 @@ mod tests {
                     ..Default::default()
                 })
             });
-        let client_pool =
-            ServiceClientPool::for_clients_list(vec![SearchServiceClient::from_service(
-                Arc::new(mock_search_service),
-                ([127, 0, 0, 1], 1000).into(),
-            )]);
-        let search_job_placer = SearchJobPlacer::new(client_pool);
-        let temp_dir = tempfile::tempdir().unwrap();
-        let data_dir_path = temp_dir.path().to_path_buf();
+        let searcher_pool = searcher_pool_for_test([("127.0.0.1:1001", mock_search_service)]);
+        let search_job_placer = SearchJobPlacer::new(searcher_pool);
+        let delete_service_task_dir = TempDirectory::for_test();
         let mut indexing_settings = IndexingSettings::for_test();
         indexing_settings.merge_policy = MergePolicyConfig::Nop;
         let pipeline = DeleteTaskPipeline::new(
@@ -395,17 +386,20 @@ mod tests {
             search_job_placer,
             indexing_settings,
             test_sandbox.storage(),
-            data_dir_path,
+            delete_service_task_dir.path().into(),
             4,
         );
 
         let (pipeline_mailbox, pipeline_handler) =
             test_sandbox.universe().spawn_builder().spawn(pipeline);
-        // Insure that the message sent by initialize method is processed.
+        // Ensure that the message sent by initialize method is processed.
         let _ = pipeline_handler.process_pending_and_observe().await.state;
-        // Pipeline will first fail and we need to wait a HEARTBEAT * 2 for the pipeline state to be
-        // updated.
-        test_sandbox.universe().sleep(HEARTBEAT * 2).await;
+        // Pipeline will first fail and we need to wait a OBSERVE_PIPELINE_INTERVAL * some number
+        // for the pipeline state to be updated.
+        test_sandbox
+            .universe()
+            .sleep(OBSERVE_PIPELINE_INTERVAL * 2)
+            .await;
         let pipeline_state = pipeline_handler.process_pending_and_observe().await.state;
         assert_eq!(pipeline_state.delete_task_planner.num_errors, 1);
         assert_eq!(pipeline_state.downloader.num_errors, 0);
@@ -455,14 +449,9 @@ mod tests {
                     ..Default::default()
                 })
             });
-        let client_pool =
-            ServiceClientPool::for_clients_list(vec![SearchServiceClient::from_service(
-                Arc::new(mock_search_service),
-                ([127, 0, 0, 1], 1000).into(),
-            )]);
-        let search_job_placer = SearchJobPlacer::new(client_pool);
-        let temp_dir = tempfile::tempdir().unwrap();
-        let data_dir_path = temp_dir.path().to_path_buf();
+        let searcher_pool = searcher_pool_for_test([("127.0.0.1:1001", mock_search_service)]);
+        let search_job_placer = SearchJobPlacer::new(searcher_pool);
+        let delete_service_task_dir = TempDirectory::for_test();
         let indexing_settings = IndexingSettings::for_test();
         let pipeline = DeleteTaskPipeline::new(
             test_sandbox.index_uid(),
@@ -470,14 +459,17 @@ mod tests {
             search_job_placer,
             indexing_settings,
             test_sandbox.storage(),
-            data_dir_path,
+            delete_service_task_dir.path().into(),
             4,
         );
 
         let (_pipeline_mailbox, pipeline_handler) =
             test_sandbox.universe().spawn_builder().spawn(pipeline);
         pipeline_handler.quit().await;
-        let observations = test_sandbox.universe().observe(HEARTBEAT).await;
+        let observations = test_sandbox
+            .universe()
+            .observe(OBSERVE_PIPELINE_INTERVAL)
+            .await;
         assert!(observations.into_iter().all(
             |observation| observation.type_name != std::any::type_name::<DeleteTaskPipeline>()
         ));

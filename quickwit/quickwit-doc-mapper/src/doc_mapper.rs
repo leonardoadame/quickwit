@@ -20,6 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::num::NonZeroU32;
+use std::ops::Bound;
 
 use anyhow::Context;
 use dyn_clone::{clone_trait_object, DynClone};
@@ -31,6 +32,7 @@ use tantivy::{Document, Term};
 
 pub type Partition = u64;
 
+/// An alias for serde_json's object type.
 pub type JsonObject = serde_json::Map<String, JsonValue>;
 
 use crate::{DocParsingError, QueryParserError};
@@ -59,7 +61,7 @@ pub trait DocMapper: Send + Sync + Debug + DynClone + 'static {
         let json_obj: JsonObject = serde_json::from_slice(json_doc).map_err(|_| {
             let json_doc_sample: String = std::str::from_utf8(json_doc)
                 .map(|doc_str| doc_str.chars().take(20).chain("...".chars()).collect())
-                .unwrap_or_else(|_| "Doc contains some invalid UTF-8 characters.".to_string());
+                .unwrap_or_else(|_| "Document contains some invalid UTF-8 characters.".to_string());
             DocParsingError::NotJsonObject(json_doc_sample)
         })?;
         self.doc_from_json_obj(json_obj)
@@ -156,6 +158,17 @@ pub struct NamedField {
 
 clone_trait_object!(DocMapper);
 
+/// Bounds for a range of terms, with an optional max count of terms being matched.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TermRange {
+    /// Start of the range
+    pub start: Bound<Term>,
+    /// End of the range
+    pub end: Bound<Term>,
+    /// Max number of matched terms
+    pub limit: Option<u64>,
+}
+
 /// Information about what a DocMapper think should be warmed up before
 /// running the query.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -170,8 +183,10 @@ pub struct WarmupInfo {
     pub fast_field_names: HashSet<String>,
     /// Whether to warmup field norms. Used mostly for scoring.
     pub field_norms: bool,
-    /// Terms to warmup, and, whether their position is needed too.
+    /// Terms to warmup, and whether their position is needed too.
     pub terms_grouped_by_field: HashMap<Field, HashMap<Term, bool>>,
+    /// Term ranges to warmup, and whether their position is needed too.
+    pub term_ranges_grouped_by_field: HashMap<Field, HashMap<TermRange, bool>>,
 }
 
 impl WarmupInfo {
@@ -192,22 +207,32 @@ impl WarmupInfo {
                 *sub_map.entry(term).or_default() |= include_position;
             }
         }
+
+        // this merge is suboptimal in case of overlapping range with no limit.
+        for (field, term_range_and_pos) in other.term_ranges_grouped_by_field.into_iter() {
+            let sub_map = self.term_ranges_grouped_by_field.entry(field).or_default();
+
+            for (term_range, include_position) in term_range_and_pos.into_iter() {
+                *sub_map.entry(term_range).or_default() |= include_position;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::ops::Bound;
 
     use quickwit_proto::query_ast_from_user_text;
     use quickwit_query::query_ast::UserInputQuery;
-    use quickwit_query::DefaultOperator;
+    use quickwit_query::BooleanOperand;
     use tantivy::schema::{Field, FieldType, Term};
 
     use crate::default_doc_mapper::{FieldMappingType, QuickwitJsonOptions};
     use crate::{
         Cardinality, DefaultDocMapper, DefaultDocMapperBuilder, DocMapper, DocParsingError,
-        FieldMappingEntry, ModeType, WarmupInfo, DYNAMIC_FIELD_NAME,
+        FieldMappingEntry, ModeType, TermRange, WarmupInfo, DYNAMIC_FIELD_NAME,
     };
 
     const JSON_DEFAULT_DOC_MAPPER: &str = r#"
@@ -277,7 +302,7 @@ mod tests {
             tantivy_schema.get_field_entry(dynamic_field).field_type()
         {
             let text_opt = json_options.get_text_indexing_options().unwrap();
-            assert_eq!(text_opt.tokenizer(), "default");
+            assert_eq!(text_opt.tokenizer(), "raw");
         } else {
             panic!("dynamic field should be of JSON type");
         }
@@ -318,7 +343,7 @@ mod tests {
         let query_ast = UserInputQuery {
             user_text: "json_field.toto.titi:hello".to_string(),
             default_fields: None,
-            default_operator: DefaultOperator::And,
+            default_operator: BooleanOperand::And,
         }
         .parse_user_query(&[])
         .unwrap();
@@ -385,6 +410,23 @@ mod tests {
         result
     }
 
+    fn hashmap_ranges(elements: &[(u32, &str, bool)]) -> HashMap<Field, HashMap<TermRange, bool>> {
+        let mut result: HashMap<Field, HashMap<TermRange, bool>> = HashMap::new();
+        for (field, term, pos) in elements {
+            let field = Field::from_field_id(*field);
+            let term = Term::from_field_text(field, term);
+            // this is a 1 element bound, but it's enought for testing.
+            let range = TermRange {
+                start: Bound::Included(term.clone()),
+                end: Bound::Included(term),
+                limit: None,
+            };
+            *result.entry(field).or_default().entry(range).or_default() |= pos;
+        }
+
+        result
+    }
+
     #[test]
     fn test_warmup_info_merge() {
         let wi_base = WarmupInfo {
@@ -393,6 +435,10 @@ mod tests {
             fast_field_names: hashset(&["fast1", "fast2"]),
             field_norms: false,
             terms_grouped_by_field: hashmap(&[(1, "term1", false), (1, "term2", false)]),
+            term_ranges_grouped_by_field: hashmap_ranges(&[
+                (2, "term1", false),
+                (2, "term2", false),
+            ]),
         };
 
         // merging with default has no impact
@@ -407,6 +453,10 @@ mod tests {
             fast_field_names: hashset(&["fast2", "fast3"]),
             field_norms: true,
             terms_grouped_by_field: hashmap(&[(2, "term1", false), (1, "term2", true)]),
+            term_ranges_grouped_by_field: hashmap_ranges(&[
+                (3, "term1", false),
+                (2, "term2", true),
+            ]),
         };
         wi_base.merge(wi_2.clone());
 
@@ -424,8 +474,8 @@ mod tests {
         );
         assert!(wi_base.field_norms);
 
-        let expected = [(1, "term1", false), (1, "term2", true), (2, "term1", false)];
-        for (field, term, pos) in expected {
+        let expected_terms = [(1, "term1", false), (1, "term2", true), (2, "term1", false)];
+        for (field, term, pos) in expected_terms {
             let field = Field::from_field_id(field);
             let term = Term::from_field_text(field, term);
 
@@ -435,6 +485,27 @@ mod tests {
                     .get(&field)
                     .unwrap()
                     .get(&term)
+                    .unwrap(),
+                pos
+            );
+        }
+
+        let expected_ranges = [(2, "term1", false), (2, "term2", true), (3, "term1", false)];
+        for (field, term, pos) in expected_ranges {
+            let field = Field::from_field_id(field);
+            let term = Term::from_field_text(field, term);
+            let range = TermRange {
+                start: Bound::Included(term.clone()),
+                end: Bound::Included(term),
+                limit: None,
+            };
+
+            assert_eq!(
+                *wi_base
+                    .term_ranges_grouped_by_field
+                    .get(&field)
+                    .unwrap()
+                    .get(&range)
                     .unwrap(),
                 pos
             );

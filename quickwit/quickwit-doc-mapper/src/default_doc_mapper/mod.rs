@@ -17,8 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-mod date_time_format;
-mod date_time_parsing;
 mod date_time_type;
 mod default_mapper;
 mod default_mapper_builder;
@@ -33,8 +31,8 @@ use regex::Regex;
 pub use self::default_mapper::DefaultDocMapper;
 pub use self::default_mapper_builder::{DefaultDocMapperBuilder, ModeType};
 pub use self::field_mapping_entry::{
-    FastFieldOptions, FieldMappingEntry, QuickwitJsonOptions, QuickwitNumericOptions,
-    QuickwitTextOptions,
+    FastFieldOptions, FieldMappingEntry, QuickwitBytesOptions, QuickwitJsonOptions,
+    QuickwitNumericOptions, QuickwitTextNormalizer, QuickwitTextOptions,
 };
 pub(crate) use self::field_mapping_entry::{
     FieldMappingEntryForSerialization, IndexRecordOptionSchema, QuickwitTextTokenizer,
