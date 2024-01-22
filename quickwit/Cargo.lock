@@ -3,12 +3,6 @@
 version = 3
 
 [[package]]
-name = "Inflector"
-version = "0.11.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
-
-[[package]]
 name = "RustyXML"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1133,7 +1127,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
- "itertools",
+ "itertools 0.10.5",
  "rand 0.8.5",
  "serde",
  "tokio",
@@ -1458,7 +1452,7 @@ dependencies = [
  "criterion-plot",
  "futures",
  "is-terminal",
- "itertools",
+ "itertools 0.10.5",
  "num-traits",
  "once_cell",
  "oorandom",
@@ -1480,7 +1474,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
 dependencies = [
  "cast",
- "itertools",
+ "itertools 0.10.5",
 ]
 
 [[package]]
@@ -2792,6 +2786,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25db6b064527c5d482d0423354fcd07a89a2dfe07b67892e62411946db7f07b0"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2850,7 +2853,7 @@ dependencies = [
  "diff",
  "ena",
  "is-terminal",
- "itertools",
+ "itertools 0.10.5",
  "lalrpop-util",
  "petgraph",
  "regex",
@@ -3396,7 +3399,7 @@ dependencies = [
  "base64 0.13.1",
  "chrono",
  "http",
- "itertools",
+ "itertools 0.10.5",
  "log",
  "num-bigint",
  "oauth2",
@@ -3603,25 +3606,27 @@ dependencies = [
 
 [[package]]
 name = "ouroboros"
-version = "0.15.6"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1358bd1558bd2a083fed428ffeda486fbfb323e698cdda7794259d592ca72db"
+checksum = "97b7be5a8a3462b752f4be3ff2b2bf2f7f1d00834902e46be2a4d68b87b0573c"
 dependencies = [
  "aliasable",
  "ouroboros_macro",
+ "static_assertions",
 ]
 
 [[package]]
 name = "ouroboros_macro"
-version = "0.15.6"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f7d21ccd03305a674437ee1248f3ab5d4b1db095cf1caf49f1713ddf61956b7"
+checksum = "b645dcde5f119c2c454a92d0dfa271a2a3b205da92e4292a68ead4bdbfde1f33"
 dependencies = [
- "Inflector",
- "proc-macro-error",
+ "heck 0.4.1",
+ "itertools 0.12.0",
  "proc-macro2",
+ "proc-macro2-diagnostics",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.18",
 ]
 
 [[package]]
@@ -4011,7 +4016,7 @@ checksum = "59230a63c37f3e18569bdb90e4a89cbf5bf8b06fea0b84e65ea10cc4df47addd"
 dependencies = [
  "difflib",
  "float-cmp",
- "itertools",
+ "itertools 0.10.5",
  "normalize-line-endings",
  "predicates-core",
  "regex",
@@ -4042,7 +4047,7 @@ dependencies = [
  "ctor",
  "diff",
  "output_vt100",
- "yansi",
+ "yansi 0.5.1",
 ]
 
 [[package]]
@@ -4118,6 +4123,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro2-diagnostics"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.18",
+ "version_check",
+ "yansi 1.0.0-rc.1",
+]
+
+[[package]]
 name = "procfs"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4185,7 +4203,7 @@ checksum = "119533552c9a7ffacc21e099c24a0ac8bb19c2a2a3f363de84cd9b844feab270"
 dependencies = [
  "bytes",
  "heck 0.4.1",
- "itertools",
+ "itertools 0.10.5",
  "lazy_static",
  "log",
  "multimap",
@@ -4206,7 +4224,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5d2d8d10f3c6ded6da8b05b5fb3b8a5082514344d56c9f871412d29b4e075b4"
 dependencies = [
  "anyhow",
- "itertools",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
@@ -4352,7 +4370,7 @@ dependencies = [
  "futures",
  "humantime",
  "indicatif",
- "itertools",
+ "itertools 0.10.5",
  "once_cell",
  "openssl-probe",
  "opentelemetry",
@@ -4400,7 +4418,7 @@ dependencies = [
  "async-trait",
  "chitchat",
  "futures",
- "itertools",
+ "itertools 0.10.5",
  "quickwit-common",
  "quickwit-config",
  "quickwit-proto",
@@ -4472,7 +4490,7 @@ dependencies = [
  "hostname",
  "http",
  "hyper",
- "itertools",
+ "itertools 0.10.5",
  "num_cpus",
  "once_cell",
  "pin-project",
@@ -4505,7 +4523,7 @@ dependencies = [
  "cron",
  "enum-iterator",
  "humantime",
- "itertools",
+ "itertools 0.10.5",
  "json_comments",
  "new_string_template",
  "once_cell",
@@ -4534,7 +4552,7 @@ dependencies = [
  "dyn-clone",
  "http",
  "hyper",
- "itertools",
+ "itertools 0.10.5",
  "mockall",
  "proptest",
  "prost",
@@ -4597,7 +4615,7 @@ dependencies = [
 name = "quickwit-datetime"
 version = "0.6.0"
 dependencies = [
- "itertools",
+ "itertools 0.10.5",
  "ouroboros",
  "serde",
  "serde_json",
@@ -4638,7 +4656,7 @@ dependencies = [
  "fnv",
  "hex",
  "indexmap",
- "itertools",
+ "itertools 0.10.5",
  "matches",
  "mockall",
  "nom",
@@ -4667,7 +4685,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
- "itertools",
+ "itertools 0.10.5",
  "quickwit-cluster",
  "quickwit-common",
  "quickwit-config",
@@ -4698,7 +4716,7 @@ dependencies = [
  "flume",
  "fnv",
  "futures",
- "itertools",
+ "itertools 0.10.5",
  "libz-sys",
  "mockall",
  "once_cell",
@@ -4782,7 +4800,7 @@ dependencies = [
  "chitchat",
  "futures-util",
  "hyper",
- "itertools",
+ "itertools 0.10.5",
  "quickwit-actors",
  "quickwit-cluster",
  "quickwit-common",
@@ -4812,7 +4830,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.21.2",
- "itertools",
+ "itertools 0.10.5",
  "once_cell",
  "prost",
  "prost-types",
@@ -4848,7 +4866,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
- "itertools",
+ "itertools 0.10.5",
  "mockall",
  "once_cell",
  "quickwit-actors",
@@ -4905,7 +4923,7 @@ dependencies = [
  "dotenv",
  "futures",
  "http",
- "itertools",
+ "itertools 0.10.5",
  "md5",
  "mockall",
  "once_cell",
@@ -5043,7 +5061,7 @@ dependencies = [
  "futures",
  "http",
  "hyper",
- "itertools",
+ "itertools 0.10.5",
  "lru",
  "mockall",
  "once_cell",
@@ -5094,7 +5112,7 @@ dependencies = [
  "futures-util",
  "http-serde",
  "hyper",
- "itertools",
+ "itertools 0.10.5",
  "mime_guess",
  "mockall",
  "num_cpus",
@@ -6178,7 +6196,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c12bc9199d1db8234678b7051747c07f517cdcf019262d1847b94ec8b1aee3e"
 dependencies = [
- "itertools",
+ "itertools 0.10.5",
  "nom",
  "unicode_categories",
 ]
@@ -6282,6 +6300,12 @@ name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "string_cache"
@@ -6440,7 +6464,7 @@ dependencies = [
  "fs4",
  "futures-util",
  "htmlescape",
- "itertools",
+ "itertools 0.10.5",
  "levenshtein_automata",
  "log",
  "lru",
@@ -6490,7 +6514,7 @@ source = "git+https://github.com/quickwit-oss/tantivy/?rev=7ee78bd#7ee78bda521b8
 dependencies = [
  "fastdivide",
  "fnv",
- "itertools",
+ "itertools 0.10.5",
  "serde",
  "tantivy-bitpacker",
  "tantivy-common",
@@ -8113,6 +8137,12 @@ name = "yansi"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09041cd90cf85f7f8b2df60c646f853b7f535ce68f85244eb6731cf89fa498ec"
+
+[[package]]
+name = "yansi"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1367295b8f788d371ce2dbc842c7b709c73ee1364d30351dd300ec2203b12377"
 
 [[package]]
 name = "zeroize"
